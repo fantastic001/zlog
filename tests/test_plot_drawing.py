@@ -7,6 +7,7 @@ from matplotlib.figure import Figure
 
 from zlog.errors import SpecError
 from zlog.plot_drawing import (
+    BUILTIN_PLOT_DRAWERS,
     BarPlotDrawer,
     MatplotlibPlotWriter,
     PlotFileLocator,
@@ -128,3 +129,36 @@ def test_bar_drawer_without_category_has_no_legend() -> None:
     BarPlotDrawer().draw(axes, PLOTS[PlotKind.BAR])
 
     assert axes.get_legend() is None
+
+
+@pytest.mark.parametrize("kind", [PlotKind.LINE, PlotKind.SCATTER])
+def test_unlabelled_single_series_has_no_legend(kind: PlotKind) -> None:
+    plot = PLOTS[kind]
+    unlabelled = PlotData(
+        plot.kind,
+        plot.x_label,
+        plot.y_label,
+        tuple(
+            PlotSeries("", s.x, s.y, s.spread, s.counts) for s in plot.series
+        ),
+    )
+    axes = Figure().add_subplot()
+
+    BUILTIN_PLOT_DRAWERS[kind].draw(axes, unlabelled)
+
+    assert axes.get_legend() is None
+
+
+def test_bar_ticks_use_axis_labels() -> None:
+    plot = PlotData(
+        PlotKind.BAR,
+        "",
+        "acc",
+        (PlotSeries("b, c", (0.0,), (1.0,), (0.0,), (1,), "b", "c"),),
+        category_label="g2",
+    )
+    axes = Figure().add_subplot()
+
+    BarPlotDrawer().draw(axes, plot)
+
+    assert [tick.get_text() for tick in axes.get_xticklabels()] == ["c"]

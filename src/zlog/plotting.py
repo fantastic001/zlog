@@ -1,7 +1,7 @@
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
@@ -9,6 +9,7 @@ from typing import Protocol
 from zlog.aggregation import parse_numeric_items, summarize_samples
 from zlog.domain import GroupKey, IterationRecord, format_group_label
 from zlog.group_filter import GroupFilter
+from zlog.group_labels import GroupLabeler, find_varying_groups
 from zlog.list_statistics import LIST_METRIC_SEPARATOR, ListStatisticsReducer
 from zlog.reporting import ReportData, Row
 
@@ -38,6 +39,7 @@ class PlotSeries:
     spread: tuple[float, ...] = ()
     counts: tuple[int, ...] = ()
     category: str = ""
+    axis_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,13 +73,19 @@ def group_records(
 
 
 def select_distinguishing_group(groups: Sequence[GroupKey]) -> str | None:
-    labels_by_name: dict[str, set[str]] = {}
-    for group in groups:
-        for name, label in group:
-            labels_by_name.setdefault(name, set()).add(label)
-    return next(
-        (name for name, labels in labels_by_name.items() if len(labels) > 1),
-        None,
+    return next(iter(find_varying_groups(groups)), None)
+
+
+def label_series_by_varying_groups(
+    series_by_group: Mapping[GroupKey, PlotSeries],
+) -> tuple[PlotSeries, ...]:
+    plotted = {
+        group: series for group, series in series_by_group.items() if series.x
+    }
+    labeler = GroupLabeler.for_varying_groups(plotted)
+    return tuple(
+        replace(series, label=labeler.label(group))
+        for group, series in plotted.items()
     )
 
 
@@ -136,14 +144,17 @@ class BarPlotDataBuilder:
             and selected[group][request.y].count > 0
         ]
         category_group = select_distinguishing_group(plotted_groups)
+        labeler = GroupLabeler.for_varying_groups(plotted_groups)
+        axis_labeler = labeler.without(category_group)
         series = tuple(
             PlotSeries(
-                label=format_group_label(group),
+                label=labeler.label(group),
                 x=(float(position),),
                 y=(selected[group][request.y].mean,),
                 spread=(selected[group][request.y].std,),
                 counts=(selected[group][request.y].count,),
                 category=dict(group).get(category_group or "", ""),
+                axis_label=axis_labeler.label(group),
             )
             for position, group in enumerate(plotted_groups)
         )
@@ -160,19 +171,19 @@ class LinePlotDataBuilder:
 
     def build(self, request: PlotRequest, data: ReportData) -> PlotData:
         matching = select_matching_records(data.records, request.group_filter)
-        series = tuple(
-            self._average_group_arrays(group, records, request.y)
+        series_by_group = {
+            group: self._average_group_arrays(records, request.y)
             for group, records in group_records(matching).items()
-        )
+        }
         return PlotData(
             PlotKind.LINE,
             LINE_PLOT_X_LABEL,
             request.y,
-            tuple(item for item in series if item.x),
+            label_series_by_varying_groups(series_by_group),
         )
 
     def _average_group_arrays(
-        self, group: GroupKey, records: Sequence[IterationRecord], name: str
+        self, records: Sequence[IterationRecord], name: str
     ) -> PlotSeries:
         arrays = [
             values
@@ -190,7 +201,7 @@ class LinePlotDataBuilder:
             for index in range(length)
         ]
         return PlotSeries(
-            label=format_group_label(group),
+            label="",
             x=tuple(map(float, range(length))),
             y=tuple(summary.mean for summary in summaries),
             spread=tuple(summary.std for summary in summaries),
@@ -205,20 +216,19 @@ class ScatterPlotDataBuilder:
     def build(self, request: PlotRequest, data: ReportData) -> PlotData:
         assert request.x is not None, "scatter plot needs an x value"
         matching = select_matching_records(data.records, request.group_filter)
-        series = tuple(
-            self._pair_group_values(group, records, request.x, request.y)
+        series_by_group = {
+            group: self._pair_group_values(records, request.x, request.y)
             for group, records in group_records(matching).items()
-        )
+        }
         return PlotData(
             PlotKind.SCATTER,
             request.x,
             request.y,
-            tuple(item for item in series if item.x),
+            label_series_by_varying_groups(series_by_group),
         )
 
     def _pair_group_values(
         self,
-        group: GroupKey,
         records: Sequence[IterationRecord],
         x_name: str,
         y_name: str,
@@ -230,7 +240,7 @@ class ScatterPlotDataBuilder:
             if not (math.isnan(point[0]) or math.isnan(point[1]))
         ]
         return PlotSeries(
-            label=format_group_label(group),
+            label="",
             x=tuple(x for x, _ in points),
             y=tuple(y for _, y in points),
         )

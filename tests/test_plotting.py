@@ -58,13 +58,13 @@ def test_resolver_reads_scalars_arrays_and_list_statistics() -> None:
 def test_bar_plot_uses_group_summaries() -> None:
     plot = BUILDERS[PlotKind.BAR].build(PlotRequest(y="a"), DATA)
 
-    assert [series.label for series in plot.series] == ["adam"]
+    assert [series.label for series in plot.series] == [""]
     assert plot.series[0].y == (6.0,)
     assert plot.series[0].spread == (1.0,)
     assert plot.series[0].category == ""
     assert plot.category_label == ""
     assert PLOT_ROW_DESCRIBERS[PlotKind.BAR](plot) == (
-        {"partition": "adam", "mean": 6.0, "std": 1.0, "n": 2},
+        {"partition": "", "mean": 6.0, "std": 1.0, "n": 2},
     )
 
 
@@ -118,7 +118,7 @@ def test_scatter_plot_of_scalars_per_iteration() -> None:
     )
 
     assert [(s.label, s.x, s.y) for s in plot.series] == [
-        ("adam", (3.0, 5.0), (5.0, 7.0))
+        ("", (3.0, 5.0), (5.0, 7.0))
     ]
 
 
@@ -157,8 +157,8 @@ def test_bar_plot_categories_follow_first_differing_group() -> None:
     plot = BUILDERS[PlotKind.BAR].build(PlotRequest(y="acc"), data)
 
     assert plot.category_label == "g2"
-    assert [(s.label, s.category) for s in plot.series] == [
-        ("a, b, c", "b"),
-        ("a, b, e", "b"),
-        ("a, d, f", "d"),
+    assert [(s.label, s.axis_label, s.category) for s in plot.series] == [
+        ("b, c", "c", "b"),
+        ("b, e", "e", "b"),
+        ("d, f", "f", "d"),
     ]

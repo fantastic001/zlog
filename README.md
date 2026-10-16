@@ -212,6 +212,14 @@ each metric gets one row. `--same-distributions-only` applies to both.
 | absent | a `+name` list, e.g. `loss` | line plot: index-wise mean ± std band over the iterations, one line per partition |
 | present | any value | scatter plot: one point per pair of values in an iteration, one colour per partition |
 
+Sections of a configured report only show the groups whose labels differ
+among the partitions they display (Definition 13). With
+`filter: {optimizer: adam}`, the table has no `optimizer` column, and
+partitions are labelled by their other groups. This applies to table columns,
+the `groups` column of `statistics`, plot legends, and the `partition` column
+of plot data. The x-axis labels of a bar plot also leave out the colour
+group. The default layout is unchanged.
+
 `loss.mean` is a single value per iteration, and `loss` is the whole list.
 For a scatter plot, `x` and `y` must have the same length in an iteration
 (a scalar has length 1); other iterations are skipped with a warning.
@@ -439,7 +447,9 @@ a scalar, and $(\text{stat}(Y))$ for `n.stat` of a list $Y$ (Definition 5).
   *Example.* $B = \{(a,b,c), (a,b,e), (a,d,f)\}$: $g_1$ has the single
   label $a$, and $g_2$ has $\{b, d\}$, so $c = 2$. The first two bars
   share colour $b$, and the third gets colour $d$. Group $g_3$ also differs,
-  but only the smallest index counts.
+  but only the smallest index counts. The x-axis label of bar $K$ joins $K(g)$
+  for $g \in \mathcal{V}(B) \setminus \{g_c\}$ (Definition 13), so here
+  the labels are $c$, $e$ and $f$.
 * Line ($x$ absent, $y$ a list in some iteration of $\bigcup_K R_K$): for each
   $K$ and index $i$, let $Z_{K,i}=(v_L(y)_i : L \in R_K,\ |v_L(y)|>i)$ with
   NaN removed. The line is $i \mapsto \bar z_{K,i}$ with band
@@ -451,6 +461,21 @@ a scalar, and $(\text{stat}(Y))$ for `n.stat` of a list $Y$ (Definition 5).
 *Example.* With $v_{L_1}(\text{loss})=(3,1)$ and $v_{L_2}(\text{loss})=(5,3,1)$ in
 one partition, $Z_0=(3,5)$, $Z_1=(1,3)$ and $Z_2=(1)$, so the line is
 $(4, 2, 1)$ with band half-widths $(1, 1, 0)$.
+
+**Definition 13 (shown groups).** For a finite set $B$ of keys, the
+varying groups are
+$\mathcal{V}(B) = (g \in \mathcal{G} : |\{K(g) : K \in B\}| > 1)$, in
+declaration order. The label of $K \in B$ is
+$\lambda_B(K) = \operatorname{join}_{\texttt{", "}}(K(g) : g \in \mathcal{V}(B))$.
+$B$ is the set of keys the section displays: the selected keys of a
+`table`, $\mathcal{K}_{\Phi_1} \cup \mathcal{K}_{\Phi_2}$ for `statistics`,
+and the keys with a non-empty series for a `plot`. A `table` drops the
+columns $\mathcal{G} \setminus \mathcal{V}(B)$. If $|B| = 1$, then
+$\mathcal{V}(B) = ()$, so the label is empty and there are no group columns.
+
+*Example.* $B = \{(\text{adam},\text{small}), (\text{adam},\text{large})\}$
+gives $\mathcal{V}(B) = (\text{size})$, and
+$\lambda_B((\text{adam},\text{small})) = \text{small}$.
 
 ## Configuration
 
@@ -596,6 +621,7 @@ cli ──► application (composition root)
            ├─ reporting     ReportSection builders, cell formatters,
            │                DefaultReportLayout
            ├─ group_filter  GroupFilter, GroupFilterParser (Definition 9)
+           ├─ group_labels  GroupLabeler: varying groups only (Definition 13)
            ├─ report_types  ReportType table: table / statistics / plot,
            │                ReportLayoutFactory → ConfiguredReportLayout
            ├─ plotting      PlotDataBuilder per PlotKind (bar/line/scatter)

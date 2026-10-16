@@ -84,6 +84,13 @@ def assign_category_colors(series: Sequence[PlotSeries]) -> dict[str, str]:
     }
 
 
+def draw_series_legend(axes: Axes, plot: PlotData) -> None:
+    if any(series.label for series in plot.series):
+        axes.legend()
+    else:
+        LOGGER.debug("plot has a single unlabelled series, no legend")
+
+
 class BarPlotDrawer:
     def draw(self, axes: Axes, plot: PlotData) -> None:
         positions = [series.x[0] for series in plot.series]
@@ -97,7 +104,7 @@ class BarPlotDrawer:
         )
         axes.set_xticks(
             positions,
-            [series.label for series in plot.series],
+            [series.axis_label for series in plot.series],
             rotation=BAR_LABEL_ROTATION,
             ha="right",
         )
@@ -132,7 +139,7 @@ class LinePlotDrawer:
                 color=line.get_color(),
                 alpha=BAND_OPACITY,
             )
-        axes.legend()
+        draw_series_legend(axes, plot)
 
 
 class ScatterPlotDrawer:
@@ -141,7 +148,7 @@ class ScatterPlotDrawer:
             axes.scatter(
                 series.x, series.y, s=SCATTER_MARKER_SIZE, label=series.label
             )
-        axes.legend()
+        draw_series_legend(axes, plot)
 
 
 BUILTIN_PLOT_DRAWERS: Mapping[PlotKind, PlotDrawer] = MappingProxyType(

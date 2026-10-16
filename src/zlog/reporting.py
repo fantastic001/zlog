@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -71,9 +71,12 @@ def describe_comparison_result(result: ComparisonResult) -> Row:
     }
 
 
-def describe_comparison(comparison: GroupComparison) -> Row:
-    first_label = format_group_label(comparison.first)
-    second_label = format_group_label(comparison.second)
+def describe_comparison(
+    comparison: GroupComparison,
+    label_group: Callable[[GroupKey], str] = format_group_label,
+) -> Row:
+    first_label = label_group(comparison.first)
+    second_label = label_group(comparison.second)
     return {
         "groups": f"({first_label}) vs ({second_label})",
         **describe_comparison_result(comparison.result),

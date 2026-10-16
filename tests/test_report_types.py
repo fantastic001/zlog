@@ -97,10 +97,8 @@ def test_table_filters_partitions_and_uses_entry_title(tmp_path: Path) -> None:
     assert section.title == "Adam"  # type: ignore[attr-defined]
     assert section.description == "about Adam"  # type: ignore[attr-defined]
     rows = section.rows  # type: ignore[attr-defined]
-    assert [(row["optimizer"], row["size"]) for row in rows] == [
-        ("adam", "large"),
-        ("adam", "small"),
-    ]
+    assert [row["size"] for row in rows] == ["large", "small"]
+    assert all("optimizer" not in row for row in rows)
     assert rows[1]["loss.mean"] == "1.500000 +- 0.000000 (N=1)"
 
 
@@ -135,6 +133,36 @@ def test_filtered_statistics_keep_only_cross_filter_pairs(
         ("acc", "(adam, large) vs (sgd, small)"),
         ("acc", "(adam, small) vs (sgd, small)"),
     ]
+
+
+def test_filtered_statistics_hide_groups_constant_among_candidates(
+    tmp_path: Path,
+) -> None:
+    (section,) = build_sections(
+        tmp_path,
+        entry(
+            "Small",
+            "statistics",
+            first={"optimizer": "adam", "size": "small"},
+            second={"optimizer": "sgd", "size": "small"},
+        ),
+    )
+
+    assert {
+        row["groups"]
+        for row in section.rows  # type: ignore[attr-defined]
+    } == {"(adam) vs (sgd)"}
+
+
+def test_table_of_single_partition_has_no_group_columns(
+    tmp_path: Path,
+) -> None:
+    (section,) = build_sections(
+        tmp_path,
+        entry("One", "table", filter={"optimizer": "sgd", "size": "large"}),
+    )
+
+    assert list(section.rows[0]) == ["acc"]  # type: ignore[attr-defined]
 
 
 def test_pooled_statistics_compare_pooled_samples(tmp_path: Path) -> None:
@@ -192,10 +220,7 @@ def test_plot_writes_file_and_attaches_link(tmp_path: Path) -> None:
     (section,) = layout.build(DATA)
 
     assert section.attachments == ("plots/Accuracy_plot.png",)
-    assert [row["partition"] for row in section.rows] == [
-        "adam, small",
-        "sgd, small",
-    ]
+    assert [row["partition"] for row in section.rows] == ["adam", "sgd"]
     ((path, title, plot),) = writer.written
     assert path == tmp_path / "plots" / "Accuracy_plot.png"
     assert title == "Accuracy plot"

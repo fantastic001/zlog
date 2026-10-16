@@ -16,6 +16,7 @@ from zlog.comparison import (
 from zlog.domain import MetricSummary, ReportEntry, Summary
 from zlog.errors import SpecError
 from zlog.group_filter import GroupFilter, GroupFilterParser
+from zlog.group_labels import GroupLabeler
 from zlog.list_statistics import ListStatisticsReducer
 from zlog.options import ComparisonFilter
 from zlog.plot_drawing import PlotFileLocator, PlotWriter
@@ -122,7 +123,19 @@ class TableSectionBuilder:
 
     def build(self, data: ReportData) -> ReportSection:
         selected = self._group_filter.select_groups(data.summary)
-        return self._summary_builder.build(selected)
+        section = self._summary_builder.build(selected)
+        hidden_names = GroupLabeler.for_varying_groups(
+            selected
+        ).find_hidden_names(selected)
+        rows = tuple(
+            {
+                name: cell
+                for name, cell in row.items()
+                if name not in hidden_names
+            }
+            for row in section.rows
+        )
+        return replace(section, rows=rows)
 
 
 class TableReportType:
@@ -153,8 +166,9 @@ class FilteredPairsStatisticsBuilder:
             for group, metrics in data.summary.items()
             if self._first.matches(group) or self._second.matches(group)
         }
+        labeler = GroupLabeler.for_varying_groups(candidates)
         rows = tuple(
-            {"metric": metric, **describe_comparison(comparison)}
+            {"metric": metric, **describe_comparison(comparison, labeler.label)}
             for metric in list_metrics(candidates)
             for comparison in self._pairwise_builder.compare_metric(
                 candidates, metric
