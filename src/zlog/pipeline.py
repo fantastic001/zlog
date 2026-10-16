@@ -7,6 +7,7 @@ from zlog.aggregation import MetricAggregator
 from zlog.discovery import RunDirectoryScanner
 from zlog.domain import (
     AnalysisSpec,
+    ExtractedValue,
     GroupKey,
     IterationRecord,
     IterationSource,
@@ -80,7 +81,7 @@ class AnalysisPipeline:
         directory_key: GroupKey,
         source: IterationSource,
         segment: int,
-        values: Mapping[str, str],
+        values: Mapping[str, ExtractedValue],
     ) -> IterationRecord | None:
         group = self._resolver.resolve(directory_key, values)
         if group is not None:

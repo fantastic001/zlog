@@ -3,13 +3,15 @@ import re
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol
 
-from zlog.domain import PatternSpec
+from zlog.capture_names import CaptureTarget, parse_capture_name
+from zlog.domain import ExtractedValue, PatternSpec
 from zlog.errors import ExtractionError
-from zlog.options import MatchPolicy
+from zlog.options import AssignmentMode, MatchPolicy
 from zlog.regex_macros import RegexMacroExpander
 
 LOGGER = logging.getLogger(__name__)
@@ -19,6 +21,10 @@ LOGGER = logging.getLogger(__name__)
 class CompiledPattern:
     regex: re.Pattern[str]
     names: tuple[str, ...]
+
+    @cached_property
+    def targets(self) -> tuple[CaptureTarget, ...]:
+        return tuple(map(parse_capture_name, self.names))
 
 
 def compile_patterns(
@@ -58,7 +64,41 @@ MATCH_SELECTORS: Mapping[MatchPolicy, MatchSelector] = MappingProxyType(
 )
 
 
-SegmentValues = list[dict[str, str]]
+SegmentValues = list[dict[str, ExtractedValue]]
+CapturedValue = tuple[CaptureTarget, str]
+
+
+class ValueAccumulator:
+    def __init__(self) -> None:
+        self._values: dict[str, str | list[str]] = {}
+
+    def assign(self, target: CaptureTarget, value: str) -> None:
+        match target.mode:
+            case AssignmentMode.REPLACE:
+                self._values[target.name] = value
+            case AssignmentMode.APPEND:
+                self._values[target.name] = self._append_value(
+                    self._values.get(target.name), value
+                )
+
+    def snapshot(self) -> dict[str, ExtractedValue]:
+        return {
+            name: value if isinstance(value, str) else tuple(value)
+            for name, value in self._values.items()
+        }
+
+    @staticmethod
+    def _append_value(
+        existing: str | list[str] | None, value: str
+    ) -> list[str]:
+        match existing:
+            case None:
+                return [value]
+            case str():
+                return [existing, value]
+            case list():
+                existing.append(value)
+                return existing
 
 
 class ValueExtractor(Protocol):
@@ -120,34 +160,51 @@ class TextValueExtractor:
         self._patterns = tuple(patterns)
         self._select_match = MATCH_SELECTORS[match_policy]
 
-    def extract_from_text(self, text: str) -> dict[str, str]:
+    def extract_from_text(self, text: str) -> dict[str, ExtractedValue]:
         return self.extract_from_lines(text.splitlines())
 
-    def extract_from_lines(self, lines: Sequence[str]) -> dict[str, str]:
-        values: dict[str, str] = {}
+    def extract_from_lines(
+        self, lines: Sequence[str]
+    ) -> dict[str, ExtractedValue]:
+        accumulator = ValueAccumulator()
         for pattern in self._patterns:
-            values.update(self._extract_pattern_values(pattern, lines))
-        return values
+            for target, value in self._capture_pattern_values(pattern, lines):
+                accumulator.assign(target, value)
+        return accumulator.snapshot()
 
-    def _extract_pattern_values(
+    def _capture_pattern_values(
         self, pattern: CompiledPattern, lines: Sequence[str]
-    ) -> dict[str, str]:
-        matches = (
+    ) -> list[CapturedValue]:
+        matches = [
             found
             for found in map(pattern.regex.search, lines)
             if found is not None
+        ]
+        selected = self._select_match(iter(matches))
+        replaced = self._capture_targets_with_mode(
+            pattern,
+            () if selected is None else (selected,),
+            AssignmentMode.REPLACE,
         )
-        selected = self._select_match(matches)
-        if selected is not None:
-            return {
-                name: value
-                for name, value in zip(
-                    pattern.names, selected.groups(), strict=False
-                )
-                if value is not None
-            }
-        else:
-            return {}
+        appended = self._capture_targets_with_mode(
+            pattern, matches, AssignmentMode.APPEND
+        )
+        return [*replaced, *appended]
+
+    @staticmethod
+    def _capture_targets_with_mode(
+        pattern: CompiledPattern,
+        matches: Sequence[Match],
+        mode: AssignmentMode,
+    ) -> list[CapturedValue]:
+        return [
+            (target, value)
+            for found in matches
+            for target, value in zip(
+                pattern.targets, found.groups(), strict=False
+            )
+            if target.mode is mode and value is not None
+        ]
 
 
 class SegmentedTextExtractor:

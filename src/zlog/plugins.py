@@ -4,6 +4,7 @@ from importlib.metadata import EntryPoint, entry_points
 from types import MappingProxyType
 
 from zlog.errors import ConfigurationError
+from zlog.list_statistics import LIST_STATISTICS, ListStatistic
 from zlog.renderers import BUILTIN_OUTPUT_FORMATS, OutputFormatPlugin
 
 LOGGER = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class PluginRegistry:
         self._output_formats = dict(output_formats)
         self._hooks: list[object] = []
         self._regex_macros: dict[str, str] = {}
+        self._list_statistics: dict[str, ListStatistic] = dict(LIST_STATISTICS)
 
     def register_output_format(
         self, name: str, plugin: OutputFormatPlugin
@@ -45,6 +47,15 @@ class PluginRegistry:
         else:
             raise ValueError("regex macro must not be empty")
 
+    def register_list_statistic(
+        self, name: str, statistic: ListStatistic
+    ) -> None:
+        if name:
+            self._list_statistics[name] = statistic
+            LOGGER.info("registered list statistic %r", name)
+        else:
+            raise ValueError("list statistic name must not be empty")
+
     def find_output_format(self, name: str) -> OutputFormatPlugin:
         try:
             return self._output_formats[name]
@@ -61,6 +72,10 @@ class PluginRegistry:
     @property
     def regex_macros(self) -> Mapping[str, str]:
         return MappingProxyType(dict(self._regex_macros))
+
+    @property
+    def list_statistics(self) -> Mapping[str, ListStatistic]:
+        return MappingProxyType(dict(self._list_statistics))
 
 
 class EntryPointPluginLoader:

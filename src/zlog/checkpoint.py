@@ -8,6 +8,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Protocol, Self
 
+from zlog.domain import ExtractedValue
 from zlog.extraction import CompiledPattern, SegmentValues, ValueExtractor
 from zlog.options import CheckpointMode, MatchPolicy
 
@@ -27,8 +28,38 @@ def describe_separator(separator: re.Pattern[str] | None) -> str | None:
             return separator.pattern
 
 
+def is_stored_value(value: object) -> bool:
+    match value:
+        case str():
+            return True
+        case list():
+            return all(isinstance(item, str) for item in value)
+        case _:
+            return False
+
+
 def is_segment_list(segments: list[Any]) -> bool:
-    return all(isinstance(segment, dict) for segment in segments)
+    return all(
+        isinstance(segment, dict)
+        and all(map(is_stored_value, segment.values()))
+        for segment in segments
+    )
+
+
+def decode_stored_value(value: str | list[str]) -> ExtractedValue:
+    match value:
+        case str():
+            return value
+        case list():
+            return tuple(value)
+
+
+def encode_stored_value(value: ExtractedValue) -> str | list[str]:
+    match value:
+        case str():
+            return value
+        case tuple():
+            return list(value)
 
 
 def fingerprint_extraction(
@@ -60,7 +91,7 @@ class CheckpointStore(Protocol):
     def lookup(self, source: Path) -> SegmentValues | None: ...
 
     def record(
-        self, source: Path, segments: Sequence[Mapping[str, str]]
+        self, source: Path, segments: Sequence[Mapping[str, ExtractedValue]]
     ) -> None: ...
 
 
@@ -80,7 +111,7 @@ class NullCheckpointStore:
         return None
 
     def record(
-        self, source: Path, segments: Sequence[Mapping[str, str]]
+        self, source: Path, segments: Sequence[Mapping[str, ExtractedValue]]
     ) -> None:
         LOGGER.debug("checkpointing disabled; not recording %s", source)
 
@@ -132,20 +163,29 @@ class JsonCheckpointStore:
                 and is_segment_list(segments)
             ):
                 return [
-                    {str(key): str(value) for key, value in segment.items()}
+                    {
+                        str(key): decode_stored_value(value)
+                        for key, value in segment.items()
+                    }
                     for segment in segments
                 ]
             case _:
                 return None
 
     def record(
-        self, source: Path, segments: Sequence[Mapping[str, str]]
+        self, source: Path, segments: Sequence[Mapping[str, ExtractedValue]]
     ) -> None:
         stamp = self._stamp_source(source)
         if stamp is not None:
             self._entries[self._entry_key(source)] = {
                 "stamp": stamp,
-                "segments": [dict(segment) for segment in segments],
+                "segments": [
+                    {
+                        name: encode_stored_value(value)
+                        for name, value in segment.items()
+                    }
+                    for segment in segments
+                ],
             }
             self._pending_records += 1
             self._flush_when_interval_reached()

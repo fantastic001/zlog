@@ -27,6 +27,7 @@ from zlog.extraction import (
 )
 from zlog.grouping import SegmentGroupResolver, partition_group_names
 from zlog.hooks import HookDispatcher, VerboseIterationPrinter
+from zlog.list_statistics import ListStatisticsReducer
 from zlog.options import CheckpointMode, ComparisonFilter, Verbosity
 from zlog.pipeline import AnalysisPipeline
 from zlog.plugins import PluginRegistry
@@ -159,7 +160,12 @@ class AnalysisApplication:
             resolver=SegmentGroupResolver(
                 spec.groups, group_names.extracted_groups
             ),
-            aggregator=MetricAggregator(self._settings.std_ddof),
+            aggregator=MetricAggregator(
+                self._settings.std_ddof,
+                ListStatisticsReducer(
+                    self._settings.std_ddof, self._registry.list_statistics
+                ),
+            ),
             hooks=HookDispatcher((*self._registry.hooks, *verbosity_hooks)),
         )
 

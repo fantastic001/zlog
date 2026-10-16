@@ -24,3 +24,8 @@ class CheckpointMode(Enum):
 class Verbosity(Enum):
     QUIET = "quiet"
     VERBOSE = "verbose"
+
+
+class AssignmentMode(Enum):
+    REPLACE = "replace"
+    APPEND = "append"

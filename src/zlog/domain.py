@@ -4,6 +4,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 GroupKey = tuple[tuple[str, str], ...]
+ExtractedValue = str | tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class GroupRun:
 class IterationRecord:
     group: GroupKey
     iteration: int
-    values: Mapping[str, str]
+    values: Mapping[str, ExtractedValue]
     segment: int = 0
 
 

@@ -6,6 +6,7 @@ from types import MappingProxyType
 
 import yaml
 
+from zlog.capture_names import parse_capture_name
 from zlog.domain import AnalysisSpec, PatternSpec
 from zlog.errors import SpecError
 
@@ -72,6 +73,17 @@ class SpecParser:
         )
 
     @staticmethod
+    def _parse_capture_names(raw_names: object, index: int) -> tuple[str, ...]:
+        names = require_string_list(raw_names, f"patterns[{index}].names")
+        try:
+            for name in names:
+                parse_capture_name(name)
+        except ValueError as error:
+            raise SpecError(f"patterns[{index}].names: {error}") from error
+        else:
+            return names
+
+    @staticmethod
     def _parse_iteration_separator(raw_separator: object) -> str | None:
         match raw_separator:
             case None:
@@ -88,9 +100,7 @@ class SpecParser:
             case {"regex": str() as regex, "names": names} if regex:
                 return PatternSpec(
                     regex=regex,
-                    names=require_string_list(
-                        names, f"patterns[{index}].names"
-                    ),
+                    names=self._parse_capture_names(names, index),
                 )
             case _:
                 raise SpecError(
