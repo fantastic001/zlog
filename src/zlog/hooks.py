@@ -65,6 +65,7 @@ class VerboseIterationPrinter:
         print(
             f"Group: {dict(record.group)}, "
             f"Iteration: {record.iteration}, "
+            f"Segment: {record.segment}, "
             f"Results: {dict(record.values)}",
             file=self._stream,
         )

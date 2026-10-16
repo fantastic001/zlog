@@ -23,15 +23,11 @@ class RunDirectoryScanner:
             raise ValueError("separator and extension must not be empty")
 
     def scan(self, input_dir: Path) -> list[GroupRun]:
-        if self._group_names:
-            runs = (
-                self._build_run(directory)
-                for directory in self._list_directories(input_dir)
-            )
-            return [run for run in runs if run is not None]
-        else:
-            LOGGER.warning("specification declares no groups")
-            return []
+        runs = (
+            self._build_run(directory)
+            for directory in self._list_directories(input_dir)
+        )
+        return [run for run in runs if run is not None]
 
     def _list_directories(self, input_dir: Path) -> list[Path]:
         try:

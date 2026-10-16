@@ -137,3 +137,32 @@ def test_plugin_registry_respects_feature_flag() -> None:
     disabled = build_plugin_registry(FeatureState.DISABLED)
 
     assert enabled.hooks == disabled.hooks == ()
+
+
+def test_iteration_separator_splits_files_into_grouped_iterations(
+    tmp_path: Path,
+    build_run_tree: RunTreeBuilder,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec_file = tmp_path / "separated.yaml"
+    spec_file.write_text(
+        "groups: [optimizer, size]\n"
+        "iteration_separator: '^=+ run =+$'\n"
+        "patterns:\n"
+        "  - regex: 'size=(\\w+)'\n"
+        "    names: [size]\n"
+        "  - regex: 'accuracy\\:\\s(\\f)'\n"
+        "    names: [accuracy]\n"
+    )
+    segments = [
+        f"size={size}\naccuracy: {value}\n"
+        for size, value in [("small", 1), ("large", 9), ("small", 3)]
+    ]
+    input_dir = build_run_tree({"adam": {0: "=== run ===\n".join(segments)}})
+
+    exit_code = main([str(spec_file), str(input_dir), "--format", "json"])
+
+    rows = json.loads(capsys.readouterr().out)[0]["rows"]
+    assert exit_code == EXIT_SUCCESS
+    assert [row["accuracy"]["n"] for row in rows] == [1, 2]
+    assert [row["accuracy"]["mean"] for row in rows] == [9.0, 2.0]

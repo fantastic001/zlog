@@ -66,7 +66,22 @@ class SpecParser:
             groups=require_string_list(raw_spec.get("groups", []), "groups"),
             patterns=patterns,
             macros=require_string_mapping(raw_spec.get("macros", {}), "macros"),
+            iteration_separator=self._parse_iteration_separator(
+                raw_spec.get("iteration_separator")
+            ),
         )
+
+    @staticmethod
+    def _parse_iteration_separator(raw_separator: object) -> str | None:
+        match raw_separator:
+            case None:
+                return None
+            case str() as separator if separator:
+                return separator
+            case _:
+                raise SpecError(
+                    "'iteration_separator' must be a non-empty regex string"
+                )
 
     def _parse_pattern(self, raw_pattern: object, index: int) -> PatternSpec:
         match raw_pattern:

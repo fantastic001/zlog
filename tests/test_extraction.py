@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,11 @@ from zlog.domain import PatternSpec
 from zlog.errors import ExtractionError
 from zlog.extraction import (
     FileValueExtractor,
+    SegmentedTextExtractor,
+    SeparatorLineSplitter,
     TextValueExtractor,
+    WholeFileSplitter,
+    build_iteration_splitter,
     compile_patterns,
 )
 from zlog.options import MatchPolicy
@@ -20,6 +25,19 @@ def build_text_extractor(
 ) -> TextValueExtractor:
     compiled = compile_patterns(patterns, RegexMacroExpander())
     return TextValueExtractor(compiled, policy)
+
+
+def build_file_extractor(
+    patterns: list[PatternSpec], max_file_bytes: int
+) -> FileValueExtractor:
+    return FileValueExtractor(
+        SegmentedTextExtractor(
+            WholeFileSplitter(),
+            build_text_extractor(patterns, MatchPolicy.LAST),
+        ),
+        "utf-8",
+        max_file_bytes,
+    )
 
 
 @pytest.mark.parametrize(
@@ -76,32 +94,24 @@ def test_more_names_than_groups_is_tolerated(
 def test_file_extractor_reads_file(tmp_path: Path) -> None:
     source = tmp_path / "0.out"
     source.write_text(LOG_TEXT)
-    extractor = FileValueExtractor(
-        build_text_extractor(
-            [PatternSpec(r"loss=(\f)", ("loss",))], MatchPolicy.LAST
-        ),
-        "utf-8",
-        1024,
+    extractor = build_file_extractor(
+        [PatternSpec(r"loss=(\f)", ("loss",))], 1024
     )
 
-    assert extractor.extract(source) == {"loss": "1"}
+    assert extractor.extract(source) == [{"loss": "1"}]
 
 
 def test_file_extractor_rejects_oversized_file(tmp_path: Path) -> None:
     source = tmp_path / "0.out"
     source.write_text(LOG_TEXT)
-    extractor = FileValueExtractor(
-        build_text_extractor([], MatchPolicy.LAST), "utf-8", 5
-    )
+    extractor = build_file_extractor([], 5)
 
     with pytest.raises(ExtractionError, match="limit"):
         extractor.extract(source)
 
 
 def test_file_extractor_reports_missing_file(tmp_path: Path) -> None:
-    extractor = FileValueExtractor(
-        build_text_extractor([], MatchPolicy.LAST), "utf-8", 5
-    )
+    extractor = build_file_extractor([], 5)
 
     with pytest.raises(ExtractionError, match="cannot read"):
         extractor.extract(tmp_path / "missing.out")
@@ -109,6 +119,63 @@ def test_file_extractor_reports_missing_file(tmp_path: Path) -> None:
 
 def test_file_extractor_requires_positive_limit() -> None:
     with pytest.raises(ValueError):
-        FileValueExtractor(
-            build_text_extractor([], MatchPolicy.LAST), "utf-8", 0
-        )
+        build_file_extractor([], 0)
+
+
+SEPARATED_LOG_LINES = [
+    "preamble",
+    "=== run ===",
+    "run adam accuracy: 0.5",
+    "",
+    "=== run ===",
+    "   ",
+    "=== run ===",
+    "run sgd accuracy: 0.9",
+]
+
+
+def test_whole_file_splitter_keeps_single_segment() -> None:
+    assert WholeFileSplitter().split(["a", "b"]) == [["a", "b"]]
+
+
+def test_separator_splitter_drops_separators_and_blank_segments() -> None:
+    splitter = SeparatorLineSplitter(re.compile(r"^=+ run =+$"))
+
+    assert splitter.split(SEPARATED_LOG_LINES) == [
+        ["preamble"],
+        ["run adam accuracy: 0.5", ""],
+        ["run sgd accuracy: 0.9"],
+    ]
+
+
+def test_separator_splitter_without_separator_line() -> None:
+    splitter = SeparatorLineSplitter(re.compile("---"))
+
+    assert splitter.split(["a"]) == [["a"]]
+    assert splitter.split([]) == []
+
+
+@pytest.mark.parametrize(
+    ("separator", "splitter_type"),
+    [(None, WholeFileSplitter), (re.compile("-"), SeparatorLineSplitter)],
+)
+def test_build_iteration_splitter(
+    separator: re.Pattern[str] | None, splitter_type: type
+) -> None:
+    assert isinstance(build_iteration_splitter(separator), splitter_type)
+
+
+def test_segmented_extractor_extracts_each_segment() -> None:
+    extractor = SegmentedTextExtractor(
+        SeparatorLineSplitter(re.compile(r"^=+ run =+$")),
+        build_text_extractor(
+            [PatternSpec(r"run (\w+) accuracy\:\s(\f)", ("opt", "acc"))],
+            MatchPolicy.LAST,
+        ),
+    )
+
+    assert extractor.extract_segments("\n".join(SEPARATED_LOG_LINES)) == [
+        {},
+        {"opt": "adam", "acc": "0.5"},
+        {"opt": "sgd", "acc": "0.9"},
+    ]

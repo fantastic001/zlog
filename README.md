@@ -64,6 +64,7 @@ patterns:
     names: [loss, time]
 macros:                            # optional, user-defined macros
   '\i': '\d+'
+iteration_separator: '^=+ run =+$' # optional, see Definition 2
 ```
 
 Built-in regex macros are expanded in this order: built-ins first, then
@@ -78,36 +79,105 @@ plugin macros, then `macros` from the specification.
 Every capturing group of a pattern is assigned to the name at the same
 position in `names`.
 
+### Several iterations in one file
+
+`iteration_separator` is a regex (macros are expanded) that splits each
+`*.out` file into several iterations. Every line it matches ends the current
+iteration and starts the next one. The separator line itself belongs to
+neither. Group labels can then be read from each iteration's text: a group
+whose name appears in some pattern's `names` takes its value from that
+pattern, and is not reported as a metric. The other groups still come from
+the directory name, in declaration order.
+
+```yaml
+groups: [optimizer, size]          # optimizer: directory, size: log text
+iteration_separator: '^=+ iteration \d+ =+$'
+patterns:
+  - regex: 'model size\:\s(\w+)'
+    names: [size]
+  - regex: 'accuracy\:\s(\f)'
+    names: [accuracy]
+```
+
+```
+runs/adam/0.out                    ==== iteration 0 ====
+                                   model size: small
+                                   accuracy: 0.50
+                                   ==== iteration 1 ====
+                                   model size: large
+                                   accuracy: 0.51
+```
+
+This yields the groups `(adam, small)` and `(adam, large)`, one sample each.
+See `examples/separated_spec.yaml`.
+
 ## Mathematical definitions
 
 Let $\mathcal{G} = (g_1,\dots,g_k)$ be the declared group names, $D$ the set of
 subdirectories of `INPUT_DIR`, and $\sigma$ the separator (`-` by default).
 
-**Definition 1 (group key).** For $d \in D$ with $\operatorname{split}_\sigma(d)
-= (\ell_1,\dots,\ell_m)$, the key is defined iff $m \ge k$:
+Let $\mathcal{N}$ be the union of all pattern `names`. The groups split into
+*extracted* groups $\mathcal{G}_E = \{g \in \mathcal{G} : g \in \mathcal{N}\}$
+and *directory* groups $\mathcal{G}_D = (h_1,\dots,h_{k'})$, the
+subsequence of $\mathcal{G}$ not in $\mathcal{N}$.
 
-$$\kappa(d) = ((g_1,\ell_1),\dots,(g_k,\ell_k)).$$
+**Definition 1 (directory key).** For $d \in D$ with
+$\operatorname{split}_\sigma(d) = (\ell_1,\dots,\ell_m)$, the directory key is
+defined iff $m \ge k'$:
 
-Labels after position $k$ are ignored. If $m < k$, the directory is skipped and
-a warning is logged.
+$$\kappa(d) = ((h_1,\ell_1),\dots,(h_{k'},\ell_{k'})).$$
 
-*Example.* $\mathcal{G}=(\text{optimizer},\text{size})$, $d=\texttt{adam-small-v2}$
-gives $\kappa(d)=((\text{optimizer},\text{adam}),(\text{size},\text{small}))$.
+Labels after position $k'$ are ignored. If $m < k'$, the directory is skipped
+and a warning is logged.
 
-**Definition 2 (extraction).** Let $L=(l_1,\dots,l_n)$ be the lines of one
-iteration file and $P$ be a pattern with names $(n_1,\dots,n_r)$. Let
+*Example.* $\mathcal{G}=(\text{optimizer},\text{size})$, $\mathcal{N}=\{\text{accuracy}\}$,
+$d=\texttt{adam-small-v2}$ gives
+$\kappa(d)=((\text{optimizer},\text{adam}),(\text{size},\text{small}))$.
+
+**Definition 2 (iterations).** Let $F=(f_1,\dots,f_n)$ be the lines of one
+`*.out` file. Without `iteration_separator`, $F$ is a single iteration. With
+separator regex $S$, let $s_1<\dots<s_q$ be the indices of the lines matched
+by $S$, and set $s_0=0$, $s_{q+1}=n+1$. The candidate iterations are
+
+$$L_j = (f_{s_j+1},\dots,f_{s_{j+1}-1}), \qquad j=0,\dots,q.$$
+
+Candidates whose lines are all blank are dropped. The remaining ones are
+numbered $0,1,\dots$ in order (the `segment` of an `IterationRecord`).
+
+*Example.* $F=(\texttt{a},\ \texttt{===},\ \texttt{===},\ \texttt{b})$ with
+$S=\texttt{\^{}===\$}$ gives the candidates $(\texttt{a}), (), (\texttt{b})$, so two
+iterations: $(\texttt{a})$ and $(\texttt{b})$.
+
+**Definition 3 (extraction).** Let $L=(l_1,\dots,l_n)$ be the lines of one
+iteration and $P$ be a pattern with names $(n_1,\dots,n_r)$. Let
 $M_P=\{i : P \text{ matches } l_i\}$. The selected line is
 $i^\ast=\max M_P$ for policy `last` or $i^\ast=\min M_P$ for `first`. Nothing
 is selected if $M_P=\emptyset$. Name $n_j$ gets the $j$-th captured group of
 $l_{i^\ast}$. When patterns share a name, the later pattern in the
-specification wins.
+specification wins. Call the result $V(L)$, a partial map from names to strings.
 
-**Definition 3 (sample).** For a group $G$ and a metric $m$, let
+**Definition 4 (group key).** For an iteration $L$ of a file in directory $d$,
+the group key is defined iff every $g \in \mathcal{G}_E$ is in the domain of
+$V(L)$:
+
+$$K(d,L) = ((g_1,\lambda(g_1)),\dots,(g_k,\lambda(g_k))), \qquad
+\lambda(g) = \begin{cases} V(L)(g) & g \in \mathcal{G}_E \\
+\kappa(d)(g) & g \in \mathcal{G}_D. \end{cases}$$
+
+If it is undefined, the iteration is skipped and a warning is logged. The
+metrics of the iteration are $V(L)$ restricted to $\mathcal{N}\setminus\mathcal{G}_E$.
+
+*Example.* $\mathcal{G}_E=\{\text{size}\}$, $\kappa(d)=((\text{optimizer},\text{adam}))$,
+$V(L)=\{\text{size}\mapsto\text{small},\ \text{accuracy}\mapsto 0.5\}$ gives
+$K=((\text{optimizer},\text{adam}),(\text{size},\text{small}))$ and the metrics
+$\{\text{accuracy}\mapsto 0.5\}$.
+
+**Definition 5 (sample).** For a group $G$ and a metric $m$, let
 $X_{G,m}=(x_1,\dots,x_N)$ be the values of $m$ over all iterations of $G$,
 parsed as IEEE-754 doubles, with `NaN` removed. Non-numeric strings are
 dropped and logged. `±inf` is kept.
 
-**Definition 4 (summary).** With $\delta$ = `std_ddof` (default $0$):
+**Definition 6 (summary).** With $\delta$ = `std_ddof` (default $0$):
 
 $$\bar x = \frac{1}{N}\sum_{i=1}^{N} x_i, \qquad
 s = \sqrt{\frac{1}{N-\delta}\sum_{i=1}^{N}(x_i-\bar x)^2}.$$
@@ -118,7 +188,7 @@ The report shows `mean +- std (N=N)`.
 *Example.* $X=(1,2,3)$, $\delta=0$: $\bar x = 2$, $s=\sqrt{2/3}\approx 0.816497$,
 displayed as `2.000000 +- 0.816497 (N=3)`.
 
-**Definition 5 (Mann–Whitney U).** For samples $X=(x_i)_{i=1}^{n_1}$ and
+**Definition 7 (Mann–Whitney U).** For samples $X=(x_i)_{i=1}^{n_1}$ and
 $Y=(y_j)_{j=1}^{n_2}$:
 
 $$U_X=\sum_{i=1}^{n_1}\sum_{j=1}^{n_2}\Big(\mathbf 1[x_i>y_j]+\tfrac12\,\mathbf 1[x_i=y_j]\Big),$$
@@ -133,7 +203,7 @@ rejected. The test runs only if $n_1,n_2 \ge$ `minimum_sample_size`
 $p=0.1$. With $\alpha=0.05$, `same_distribution = True`. Three samples per
 group are too few to reject $H_0$.
 
-**Definition 6 (Cohen's d).** With population variances $\sigma^2_X$ and
+**Definition 8 (Cohen's d).** With population variances $\sigma^2_X$ and
 $\sigma^2_Y$:
 
 $$d=\frac{\bar x-\bar y}{\sqrt{(\sigma^2_X+\sigma^2_Y)/2}}.$$
@@ -177,14 +247,16 @@ See `examples/zlog.toml`.
 
 ## Checkpointing
 
-With `--checkpoint FILE`, the values extracted from each iteration file are
-stored under the file's absolute path, together with its
+With `--checkpoint FILE`, the values extracted from each iteration file (one
+entry per iteration of Definition 2) are stored under the file's absolute
+path, together with its
 `(mtime_ns, size)` stamp. The checkpoint is written atomically
 (temp file + `os.replace`) every `checkpoint_interval` new records and again
 at exit. A later run reuses an entry only when all of these hold:
 
 1. the checkpoint format version matches,
-2. the SHA-256 fingerprint of (expanded regexes, names, match policy) matches,
+2. the SHA-256 fingerprint of (expanded regexes, names, expanded
+   `iteration_separator`, match policy) matches,
 3. the file's stamp is unchanged.
 
 So an interrupted run continues where it stopped, and changing the
@@ -245,7 +317,9 @@ cli ──► application (composition root)
            ├─ spec_loader   SpecParser / SpecLoader (YAML, JSON; table of decoders)
            ├─ regex_macros  RegexMacroExpander
            ├─ discovery     RunDirectoryScanner      → GroupRun[IterationSource]
-           ├─ extraction    TextValueExtractor, FileValueExtractor (ValueExtractor protocol)
+           ├─ extraction    IterationSplitter (WholeFile / SeparatorLine),
+           │                SegmentedTextExtractor, FileValueExtractor
+           ├─ grouping      partition_group_names, SegmentGroupResolver
            ├─ checkpoint    CheckpointedExtractor (decorator), Json/Null CheckpointStore
            ├─ pipeline      AnalysisPipeline (+ hooks.HookDispatcher)
            ├─ aggregation   MetricAggregator         → Summary
@@ -263,7 +337,8 @@ cli ──► application (composition root)
 * The comparison tables cover every metric seen in any group, not only the
   metrics of the first group. They also always include a `same_distribution`
   column.
-* `--verbose` output goes to stderr, so stdout carries only the report.
+* `--verbose` output goes to stderr, so stdout carries only the report. Each
+  line also shows the `Segment` (iteration index inside the file).
 * The old script expanded macros in place on every file, so a pattern using
   `\s` became `\s**` on the second iteration and crashed with
   `multiple repeat`. Macros are now expanded once, when the pattern is compiled.

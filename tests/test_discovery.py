@@ -34,10 +34,14 @@ def test_skips_directories_with_too_few_labels(
     assert RunDirectoryScanner(["a", "b"], "-", ".out").scan(root) == []
 
 
-def test_no_groups_yields_no_runs(build_run_tree: RunTreeBuilder) -> None:
-    root = build_run_tree({"adam": {0: ""}})
+def test_no_directory_groups_yields_empty_keys(
+    build_run_tree: RunTreeBuilder,
+) -> None:
+    root = build_run_tree({"all": {0: ""}})
 
-    assert RunDirectoryScanner([], "-", ".out").scan(root) == []
+    runs = RunDirectoryScanner([], "-", ".out").scan(root)
+
+    assert [run.key for run in runs] == [()]
 
 
 def test_missing_input_directory_raises(tmp_path: Path) -> None:

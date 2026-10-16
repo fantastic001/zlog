@@ -19,6 +19,15 @@ def test_loads_yaml_spec(spec_file: Path) -> None:
     assert spec.groups == ("optimizer", "size")
     assert spec.patterns[0] == PatternSpec(r"accuracy\:\s(\f)", ("accuracy",))
     assert dict(spec.macros) == {}
+    assert spec.iteration_separator is None
+
+
+def test_loads_iteration_separator(tmp_path: Path) -> None:
+    spec = load_spec_text(
+        tmp_path, "spec.yaml", "iteration_separator: '^=+ run \\d+ =+$'\n"
+    )
+
+    assert spec.iteration_separator == r"^=+ run \d+ =+$"  # type: ignore[attr-defined]
 
 
 def test_loads_json_spec_with_macros(tmp_path: Path) -> None:
@@ -49,6 +58,8 @@ def test_unknown_suffix_falls_back_to_yaml(tmp_path: Path) -> None:
         "patterns: [{regex: 'x'}]\n",
         "patterns: [{regex: 'x', names: [1]}]\n",
         "macros: [a]\n",
+        "iteration_separator: ''\n",
+        "iteration_separator: [a]\n",
         "groups: [a\n",
     ],
 )

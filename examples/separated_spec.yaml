@@ -1,0 +1,7 @@
+groups: [optimizer, size]
+iteration_separator: '^=+ iteration \d+ =+$'
+patterns:
+  - regex: 'model size\:\s(\w+)'
+    names: [size]
+  - regex: 'accuracy\:\s(\f)'
+    names: [accuracy]

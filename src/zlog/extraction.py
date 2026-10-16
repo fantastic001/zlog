@@ -58,8 +58,57 @@ MATCH_SELECTORS: Mapping[MatchPolicy, MatchSelector] = MappingProxyType(
 )
 
 
+SegmentValues = list[dict[str, str]]
+
+
 class ValueExtractor(Protocol):
-    def extract(self, source: Path) -> dict[str, str]: ...
+    def extract(self, source: Path) -> SegmentValues: ...
+
+
+class IterationSplitter(Protocol):
+    def split(self, lines: Sequence[str]) -> list[list[str]]: ...
+
+
+class WholeFileSplitter:
+    def split(self, lines: Sequence[str]) -> list[list[str]]:
+        return [list(lines)]
+
+
+class SeparatorLineSplitter:
+    def __init__(self, separator: re.Pattern[str]) -> None:
+        self._separator = separator
+
+    def split(self, lines: Sequence[str]) -> list[list[str]]:
+        segments: list[list[str]] = [[]]
+        for line in lines:
+            if self._separator.search(line) is None:
+                segments[-1].append(line)
+            else:
+                segments.append([])
+        non_blank_segments = [
+            segment for segment in segments if self._has_content(segment)
+        ]
+        LOGGER.debug(
+            "split %d lines into %d segments",
+            len(lines),
+            len(non_blank_segments),
+        )
+        return non_blank_segments
+
+    @staticmethod
+    def _has_content(segment: Sequence[str]) -> bool:
+        return any(line.strip() for line in segment)
+
+
+def build_iteration_splitter(
+    separator: re.Pattern[str] | None,
+) -> IterationSplitter:
+    match separator:
+        case None:
+            return WholeFileSplitter()
+        case re.Pattern():
+            LOGGER.debug("splitting iterations on %s", separator.pattern)
+            return SeparatorLineSplitter(separator)
 
 
 class TextValueExtractor:
@@ -72,7 +121,9 @@ class TextValueExtractor:
         self._select_match = MATCH_SELECTORS[match_policy]
 
     def extract_from_text(self, text: str) -> dict[str, str]:
-        lines = text.splitlines()
+        return self.extract_from_lines(text.splitlines())
+
+    def extract_from_lines(self, lines: Sequence[str]) -> dict[str, str]:
         values: dict[str, str] = {}
         for pattern in self._patterns:
             values.update(self._extract_pattern_values(pattern, lines))
@@ -99,10 +150,26 @@ class TextValueExtractor:
             return {}
 
 
+class SegmentedTextExtractor:
+    def __init__(
+        self,
+        splitter: IterationSplitter,
+        line_extractor: TextValueExtractor,
+    ) -> None:
+        self._splitter = splitter
+        self._line_extractor = line_extractor
+
+    def extract_segments(self, text: str) -> SegmentValues:
+        return [
+            self._line_extractor.extract_from_lines(segment)
+            for segment in self._splitter.split(text.splitlines())
+        ]
+
+
 class FileValueExtractor:
     def __init__(
         self,
-        text_extractor: TextValueExtractor,
+        text_extractor: SegmentedTextExtractor,
         encoding: str,
         max_file_bytes: int,
     ) -> None:
@@ -113,12 +180,12 @@ class FileValueExtractor:
         else:
             raise ValueError("max_file_bytes must be positive")
 
-    def extract(self, source: Path) -> dict[str, str]:
+    def extract(self, source: Path) -> SegmentValues:
         LOGGER.debug("extracting values from %s", source)
         text = self._read_bounded_text(source)
-        values = self._text_extractor.extract_from_text(text)
-        LOGGER.debug("extracted %s from %s", values, source)
-        return values
+        segments = self._text_extractor.extract_segments(text)
+        LOGGER.debug("extracted %s from %s", segments, source)
+        return segments
 
     def _read_bounded_text(self, source: Path) -> str:
         try:

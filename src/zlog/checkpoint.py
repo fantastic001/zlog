@@ -2,29 +2,45 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Protocol, Self
 
-from zlog.extraction import CompiledPattern, ValueExtractor
+from zlog.extraction import CompiledPattern, SegmentValues, ValueExtractor
 from zlog.options import CheckpointMode, MatchPolicy
 
 LOGGER = logging.getLogger(__name__)
 
-CHECKPOINT_FORMAT_VERSION = 1
+CHECKPOINT_FORMAT_VERSION = 2
 TEMPORARY_SUFFIX = ".tmp"
 
 SourceStamp = list[int]
 
 
+def describe_separator(separator: re.Pattern[str] | None) -> str | None:
+    match separator:
+        case None:
+            return None
+        case re.Pattern():
+            return separator.pattern
+
+
+def is_segment_list(segments: list[Any]) -> bool:
+    return all(isinstance(segment, dict) for segment in segments)
+
+
 def fingerprint_extraction(
-    patterns: Sequence[CompiledPattern], match_policy: MatchPolicy
+    patterns: Sequence[CompiledPattern],
+    separator: re.Pattern[str] | None,
+    match_policy: MatchPolicy,
 ) -> str:
     description = {
         "patterns": [
             [pattern.regex.pattern, list(pattern.names)] for pattern in patterns
         ],
+        "iteration_separator": describe_separator(separator),
         "match_policy": match_policy.value,
     }
     encoded = json.dumps(description, sort_keys=True).encode("utf-8")
@@ -41,9 +57,11 @@ class CheckpointStore(Protocol):
         traceback: TracebackType | None,
     ) -> None: ...
 
-    def lookup(self, source: Path) -> dict[str, str] | None: ...
+    def lookup(self, source: Path) -> SegmentValues | None: ...
 
-    def record(self, source: Path, values: Mapping[str, str]) -> None: ...
+    def record(
+        self, source: Path, segments: Sequence[Mapping[str, str]]
+    ) -> None: ...
 
 
 class NullCheckpointStore:
@@ -58,10 +76,12 @@ class NullCheckpointStore:
     ) -> None:
         LOGGER.debug("checkpointing disabled; nothing to flush")
 
-    def lookup(self, source: Path) -> dict[str, str] | None:
+    def lookup(self, source: Path) -> SegmentValues | None:
         return None
 
-    def record(self, source: Path, values: Mapping[str, str]) -> None:
+    def record(
+        self, source: Path, segments: Sequence[Mapping[str, str]]
+    ) -> None:
         LOGGER.debug("checkpointing disabled; not recording %s", source)
 
 
@@ -100,22 +120,32 @@ class JsonCheckpointStore:
     ) -> None:
         self.flush()
 
-    def lookup(self, source: Path) -> dict[str, str] | None:
+    def lookup(self, source: Path) -> SegmentValues | None:
         current_stamp = self._stamp_source(source)
         match self._entries.get(self._entry_key(source)):
-            case {"stamp": list() as recorded, "values": dict() as values} if (
-                current_stamp is not None and recorded == current_stamp
+            case {
+                "stamp": list() as recorded,
+                "segments": list() as segments,
+            } if (
+                current_stamp is not None
+                and recorded == current_stamp
+                and is_segment_list(segments)
             ):
-                return {str(key): str(value) for key, value in values.items()}
+                return [
+                    {str(key): str(value) for key, value in segment.items()}
+                    for segment in segments
+                ]
             case _:
                 return None
 
-    def record(self, source: Path, values: Mapping[str, str]) -> None:
+    def record(
+        self, source: Path, segments: Sequence[Mapping[str, str]]
+    ) -> None:
         stamp = self._stamp_source(source)
         if stamp is not None:
             self._entries[self._entry_key(source)] = {
                 "stamp": stamp,
-                "values": dict(values),
+                "segments": [dict(segment) for segment in segments],
             }
             self._pending_records += 1
             self._flush_when_interval_reached()
@@ -223,12 +253,12 @@ class CheckpointedExtractor:
         self._inner = inner
         self._store = store
 
-    def extract(self, source: Path) -> dict[str, str]:
+    def extract(self, source: Path) -> SegmentValues:
         cached = self._store.lookup(source)
         if cached is None:
-            values = self._inner.extract(source)
-            self._store.record(source, values)
-            return values
+            segments = self._inner.extract(source)
+            self._store.record(source, segments)
+            return segments
         else:
             LOGGER.debug("checkpoint hit for %s", source)
             return cached

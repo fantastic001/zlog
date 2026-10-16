@@ -19,6 +19,7 @@ class AnalysisSpec:
     macros: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    iteration_separator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class IterationRecord:
     group: GroupKey
     iteration: int
     values: Mapping[str, str]
+    segment: int = 0
 
 
 @dataclass(frozen=True)

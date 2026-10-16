@@ -56,5 +56,6 @@ def test_verbose_printer_writes_iteration() -> None:
     VerboseIterationPrinter(stream).on_iteration_analyzed(RECORD)
 
     assert stream.getvalue() == (
-        "Group: {'optimizer': 'adam'}, Iteration: 3, Results: {'acc': '0.5'}\n"
+        "Group: {'optimizer': 'adam'}, Iteration: 3, Segment: 0, "
+        "Results: {'acc': '0.5'}\n"
     )
