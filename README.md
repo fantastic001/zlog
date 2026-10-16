@@ -23,6 +23,7 @@ python3 -m venv .venv
 ```sh
 zlog-analyze SPEC_FILE INPUT_DIR [options]
 python -m zlog SPEC_FILE INPUT_DIR [options]
+some-command | zlog-analyze SPEC_FILE - [--stdin-labels LABELS] [options]
 ```
 
 | Option | Meaning |
@@ -35,6 +36,7 @@ python -m zlog SPEC_FILE INPUT_DIR [options]
 | `--checkpoint FILE` | cache extracted values in a JSON checkpoint; re-runs skip unchanged files |
 | `--restart` | ignore an existing checkpoint and recompute everything |
 | `--output FILE` | write the report to a file instead of stdout |
+| `--stdin-labels LABELS` | with `INPUT_DIR` = `-`: the group labels a directory name would give, e.g. `adam-small` |
 | `--log-level LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
 
 Exit codes: `0` for success, `2` for a usage, configuration or specification
@@ -52,6 +54,31 @@ INPUT_DIR/
     ├── 0.out
     └── 1.out
 ```
+
+### Reading from stdin
+
+With `-` as `INPUT_DIR`, a single log is read from stdin (at most
+`max_input_file_bytes` bytes, decoded with `file_encoding`). It is handled
+like one file `0.out` in a single run directory:
+
+* `iteration_separator` splits it into iterations (Definition 2);
+* groups read from the log text work as usual (Definition 4);
+* the remaining (directory) groups take their labels from `--stdin-labels`,
+  split on `group_separator` exactly like a directory name (Definition 1). If
+  there are directory groups and too few labels, the run fails with exit
+  code `2`.
+
+Checkpointing is not available for stdin, because a stream has no
+`(mtime_ns, size)` stamp. `--checkpoint` is ignored with a warning.
+
+```sh
+./train.sh | zlog-analyze examples/separated_spec.yaml - --stdin-labels adam
+```
+
+*Example.* With `examples/separated_spec.yaml`, $\mathcal{G}_D=(\text{optimizer})$
+and $\mathcal{G}_E=\{\text{size}\}$. `--stdin-labels adam` gives
+$\kappa=((\text{optimizer},\text{adam}))$, and every iteration's key is
+$((\text{optimizer},\text{adam}),(\text{size},V(L)(\text{size})))$.
 
 ### Specification file (YAML or JSON)
 
@@ -367,9 +394,12 @@ analysis continues. Set `ZLOG_PLUGINS=off` to turn off plugin loading.
 cli ──► application (composition root)
            ├─ spec_loader   SpecParser / SpecLoader (YAML, JSON; table of decoders)
            ├─ regex_macros  RegexMacroExpander
-           ├─ discovery     RunDirectoryScanner      → GroupRun[IterationSource]
+           ├─ inputs        InputChannel: DirectoryInput / StdinInput
+           ├─ discovery     RunSource: DirectoryRunSource / StdinRunSource
+           │                RunDirectoryScanner, GroupLabelParser → GroupRun
            ├─ extraction    IterationSplitter (WholeFile / SeparatorLine),
-           │                SegmentedTextExtractor, FileValueExtractor
+           │                TextReader (BoundedFile / BoundedStream),
+           │                SegmentedTextExtractor, SourceValueExtractor
            ├─ grouping      partition_group_names, SegmentGroupResolver
            ├─ checkpoint    CheckpointedExtractor (decorator), Json/Null CheckpointStore
            ├─ pipeline      AnalysisPipeline (+ hooks.HookDispatcher)
