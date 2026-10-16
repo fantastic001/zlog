@@ -79,6 +79,27 @@ plugin macros, then `macros` from the specification.
 Every capturing group of a pattern is assigned to the name at the same
 position in `names`.
 
+### Collecting lists with `+name`
+
+A name written with a `+` prefix collects values instead of replacing them.
+Within one iteration, every line the pattern matches appends its capture,
+whatever the match policy is. If the name already holds a single value (from
+an earlier pattern), that value becomes the first item of the list. Each
+iteration's list is then reported as five metrics: `name.mean`, `name.count`,
+`name.stddev`, `name.min`, `name.max` (see Definition 5).
+
+```yaml
+groups: [optimizer]
+patterns:
+  - regex: 'epoch \d+ loss=(\f)'
+    names: [+loss]                 # all epochs of the iteration
+  - regex: 'accuracy\:\s(\f)'
+    names: [accuracy]              # last matching line only
+```
+
+Plugins can add more list statistics with
+`registry.register_list_statistic("sum", lambda values, ddof: sum(values))`.
+
 ### Several iterations in one file
 
 `iteration_separator` is a regex (macros are expanded) that splits each
@@ -153,8 +174,21 @@ iteration and $P$ be a pattern with names $(n_1,\dots,n_r)$. Let
 $M_P=\{i : P \text{ matches } l_i\}$. The selected line is
 $i^\ast=\max M_P$ for policy `last` or $i^\ast=\min M_P$ for `first`. Nothing
 is selected if $M_P=\emptyset$. Name $n_j$ gets the $j$-th captured group of
-$l_{i^\ast}$. When patterns share a name, the later pattern in the
-specification wins. Call the result $V(L)$, a partial map from names to strings.
+$l_{i^\ast}$. Call the result $V(L)$, a partial map from names to values,
+built by applying the assignments of the patterns in specification order:
+
+* a plain name $n$ assigns $V(n) \leftarrow c$, where $c$ is the capture of
+  the selected line, so the later pattern wins;
+* a name written `+n` appends, for each $i \in M_P$ in increasing order, the
+  capture $c_i$ of line $l_i$:
+
+$$V(n) \leftarrow \begin{cases} (c_i) & n \notin \operatorname{dom} V \\
+(v, c_i) & V(n) = v \text{ is a single string} \\
+(v_1,\dots,v_p, c_i) & V(n) = (v_1,\dots,v_p). \end{cases}$$
+
+*Example.* With patterns `loss=(\f)` → `[metric]` and `epoch (\d)` →
+`[+metric]` on the lines `epoch 1 loss=2`, `epoch 2 loss=1` and policy `last`,
+$V(\text{metric}) = (1, 1, 2)$.
 
 **Definition 4 (group key).** For an iteration $L$ of a file in directory $d$,
 the group key is defined iff every $g \in \mathcal{G}_E$ is in the domain of
@@ -176,6 +210,23 @@ $\{\text{accuracy}\mapsto 0.5\}$.
 $X_{G,m}=(x_1,\dots,x_N)$ be the values of $m$ over all iterations of $G$,
 parsed as IEEE-754 doubles, with `NaN` removed. Non-numeric strings are
 dropped and logged. `±inf` is kept.
+
+A list value $V(n) = (v_1,\dots,v_p)$ is not a metric itself. Let
+$Y=(y_1,\dots,y_q)$ be its items parsed as doubles, with non-numeric items
+and `NaN` removed. It contributes one value per iteration to each of these
+metrics ($\delta$ as in Definition 6):
+
+| Metric | Value |
+|---|---|
+| `n.mean` | $\frac1q\sum_j y_j$, or NaN if $q=0$ |
+| `n.count` | $q$ |
+| `n.stddev` | $\sqrt{\frac{1}{q-\delta}\sum_j (y_j-\bar y)^2}$, or NaN if $q \le \delta$ |
+| `n.min` | $\min_j y_j$, or NaN if $q=0$ |
+| `n.max` | $\max_j y_j$, or NaN if $q=0$ |
+
+*Example.* Two iterations with $Y=(1,3)$ and $Y=(5,7,9)$ give
+$X_{G,\texttt{n.mean}}=(2,7)$, $X_{G,\texttt{n.count}}=(2,3)$,
+$X_{G,\texttt{n.min}}=(1,5)$ and $X_{G,\texttt{n.max}}=(3,9)$.
 
 **Definition 6 (summary).** With $\delta$ = `std_ddof` (default $0$):
 
@@ -304,7 +355,7 @@ Lifecycle hooks: a hook implements any subset of these methods.
 | Event | Method | Called |
 |---|---|---|
 | load | `on_load(spec: AnalysisSpec)` | once, before scanning |
-| execute | `on_iteration_analyzed(record: IterationRecord)` | after every iteration file |
+| execute | `on_iteration_analyzed(record: IterationRecord)` | after every iteration (values are `str` or, for `+name`, `tuple[str, ...]`) |
 | terminate | `on_terminate(summary: Summary)` | once, after aggregation |
 
 When a hook raises an exception, it is logged at `ERROR` level and the
@@ -322,7 +373,9 @@ cli ──► application (composition root)
            ├─ grouping      partition_group_names, SegmentGroupResolver
            ├─ checkpoint    CheckpointedExtractor (decorator), Json/Null CheckpointStore
            ├─ pipeline      AnalysisPipeline (+ hooks.HookDispatcher)
+           ├─ capture_names parse_capture_name (`+name` → AssignmentMode.APPEND)
            ├─ aggregation   MetricAggregator         → Summary
+           ├─ list_statistics ListStatisticsReducer (table of list statistics)
            ├─ statistics    DistributionTest protocol, MannWhitneyUTest, compute_cohen_d
            ├─ comparison    MetricComparator, PairwiseComparisonBuilder
            ├─ reporting     ReportSection builders, cell formatters
