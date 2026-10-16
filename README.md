@@ -208,7 +208,7 @@ each metric gets one row. `--same-distributions-only` applies to both.
 
 | `x` | `y` | Plot |
 |---|---|---|
-| absent | a scalar metric, e.g. `accuracy` or `loss.mean` | bar plot: one bar per partition, mean ± std |
+| absent | a scalar metric, e.g. `accuracy` or `loss.mean` | bar plot: one bar per partition, mean ± std, coloured by the first group whose labels differ |
 | absent | a `+name` list, e.g. `loss` | line plot: index-wise mean ± std band over the iterations, one line per partition |
 | present | any value | scatter plot: one point per pair of values in an iteration, one colour per partition |
 
@@ -431,7 +431,15 @@ a scalar, and $(\text{stat}(Y))$ for `n.stat` of a list $Y$ (Definition 5).
 
 * Bar ($x$ absent, $y$ never a list in $R_K$): one bar per
   $K$ with $N>0$, of height $\bar x$ and error $s$ of $X_{K,y}$
-  (Definition 6).
+  (Definition 6). Let $B$ be the plotted keys and
+  $c = \min\{j : |\{K(g_j) : K \in B\}| > 1\}$. Bar $K$ gets colour
+  $K(g_c)$, and the legend is titled $g_c$. If no such $j$ exists, all bars
+  share one colour and there is no legend.
+
+  *Example.* $B = \{(a,b,c), (a,b,e), (a,d,f)\}$: $g_1$ has the single
+  label $a$, and $g_2$ has $\{b, d\}$, so $c = 2$. The first two bars
+  share colour $b$, and the third gets colour $d$. Group $g_3$ also differs,
+  but only the smallest index counts.
 * Line ($x$ absent, $y$ a list in some iteration of $\bigcup_K R_K$): for each
   $K$ and index $i$, let $Z_{K,i}=(v_L(y)_i : L \in R_K,\ |v_L(y)|>i)$ with
   NaN removed. The line is $i \mapsto \bar z_{K,i}$ with band
