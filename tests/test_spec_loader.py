@@ -59,6 +59,7 @@ def test_unknown_suffix_falls_back_to_yaml(tmp_path: Path) -> None:
         "patterns: [{regex: 'x', names: [1]}]\n",
         "macros: [a]\n",
         "iteration_separator: ''\n",
+        "patterns: [{regex: 'x', names: ['+']}]\n",
         "iteration_separator: [a]\n",
         "groups: [a\n",
     ],

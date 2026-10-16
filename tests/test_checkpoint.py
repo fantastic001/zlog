@@ -127,6 +127,8 @@ def test_corrupt_checkpoint_starts_fresh(
         lambda stamp: {"stamp": "bad"},
         lambda stamp: {"stamp": stamp, "segments": ["not a mapping"]},
         lambda stamp: {"stamp": stamp, "values": {"value": "1"}},
+        lambda stamp: {"stamp": stamp, "segments": [{"value": 1}]},
+        lambda stamp: {"stamp": stamp, "segments": [{"value": [1]}]},
     ],
 )
 def test_malformed_entry_is_a_miss(
@@ -203,3 +205,19 @@ def test_fingerprint_depends_on_patterns_separator_and_policy() -> None:
     assert baseline != fingerprint_extraction(
         patterns, separator, MatchPolicy.LAST
     )
+
+
+class ListExtractor:
+    def extract(self, source: Path) -> list[dict[str, str | tuple[str, ...]]]:
+        return [{"loss": ("1", "2"), "acc": "0.5"}]
+
+
+def test_list_values_survive_checkpoint_round_trip(
+    tmp_path: Path, source: Path
+) -> None:
+    checkpoint_file = tmp_path / "checkpoint.json"
+    with open_store(checkpoint_file) as store:
+        CheckpointedExtractor(ListExtractor(), store).extract(source)
+
+    with open_store(checkpoint_file) as store:
+        assert store.lookup(source) == [{"loss": ("1", "2"), "acc": "0.5"}]

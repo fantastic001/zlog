@@ -13,6 +13,7 @@ def register_sample_plugin(registry: PluginRegistry) -> None:
     registry.register_output_format(" TSV ", BUILTIN_OUTPUT_FORMATS["csv"])
     registry.register_hook("hook")
     registry.register_regex_macro(r"\i", r"\d+")
+    registry.register_list_statistic("sum", lambda values, ddof: sum(values))
 
 
 def broken_plugin(registry: PluginRegistry) -> None:
@@ -39,6 +40,7 @@ def test_loader_registers_plugins_and_survives_failures(
     assert registry.find_output_format("tsv") is BUILTIN_OUTPUT_FORMATS["csv"]
     assert registry.hooks == ("hook",)
     assert dict(registry.regex_macros) == {r"\i": r"\d+"}
+    assert list(registry.list_statistics)[-1] == "sum"
     assert "plugin is broken" in caplog.text
 
 
@@ -58,3 +60,5 @@ def test_registry_rejects_empty_names() -> None:
         registry.register_output_format(" ", BUILTIN_OUTPUT_FORMATS["csv"])
     with pytest.raises(ValueError):
         registry.register_regex_macro("", "x")
+    with pytest.raises(ValueError):
+        registry.register_list_statistic("", lambda values, ddof: 0.0)

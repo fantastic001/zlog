@@ -166,3 +166,35 @@ def test_iteration_separator_splits_files_into_grouped_iterations(
     assert exit_code == EXIT_SUCCESS
     assert [row["accuracy"]["n"] for row in rows] == [1, 2]
     assert [row["accuracy"]["mean"] for row in rows] == [9.0, 2.0]
+
+
+def test_appended_values_are_reported_as_list_statistics(
+    tmp_path: Path,
+    build_run_tree: RunTreeBuilder,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec_file = tmp_path / "lists.yaml"
+    spec_file.write_text(
+        "groups: [optimizer]\n"
+        "patterns:\n"
+        "  - regex: 'loss=(\\f)'\n"
+        "    names: ['+loss']\n"
+    )
+    input_dir = build_run_tree(
+        {"adam": {0: "loss=1\nloss=3\n", 1: "loss=5\nloss=7\nloss=9\n"}}
+    )
+
+    exit_code = main([str(spec_file), str(input_dir), "--format", "json"])
+
+    sections = json.loads(capsys.readouterr().out)
+    row = sections[0]["rows"][0]
+    assert exit_code == EXIT_SUCCESS
+    assert row["loss.mean"]["mean"] == 4.5
+    assert row["loss.count"]["mean"] == 2.5
+    assert row["loss.min"]["mean"] == 3.0
+    assert row["loss.max"]["mean"] == 6.0
+    assert "loss.stddev" in row
+    assert [section["title"] for section in sections[1:]] == [
+        f"Comparing groups for pattern: loss.{name}"
+        for name in ("mean", "count", "stddev", "min", "max")
+    ]

@@ -64,3 +64,20 @@ def test_metric_values_exclude_extracted_groups() -> None:
 def test_resolver_rejects_undeclared_extracted_group() -> None:
     with pytest.raises(ValueError):
         SegmentGroupResolver(("optimizer",), ("size",))
+
+
+def test_partition_ignores_append_prefix() -> None:
+    spec = AnalysisSpec(
+        ("optimizer", "size"), (PatternSpec(r"(\w+)", ("+size",)),)
+    )
+
+    assert partition_group_names(spec).extracted_groups == ("size",)
+
+
+def test_list_label_cannot_name_a_group(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    resolver = SegmentGroupResolver(("optimizer", "size"), ("size",))
+
+    assert resolver.resolve(DIRECTORY_KEY, {"size": ("a", "b")}) is None
+    assert "list value" in caplog.text

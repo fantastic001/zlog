@@ -179,3 +179,42 @@ def test_segmented_extractor_extracts_each_segment() -> None:
         {"opt": "adam", "acc": "0.5"},
         {"opt": "sgd", "acc": "0.9"},
     ]
+
+
+def test_appending_name_collects_every_matching_line() -> None:
+    extractor = build_text_extractor(
+        [PatternSpec(r"epoch (\d+) accuracy\:\s(\f)", ("epoch", "+acc"))],
+        MatchPolicy.LAST,
+    )
+
+    assert extractor.extract_from_text(LOG_TEXT) == {
+        "epoch": "2",
+        "acc": ("0.5", "0.7"),
+    }
+
+
+def test_appending_name_wraps_existing_value() -> None:
+    extractor = build_text_extractor(
+        [
+            PatternSpec(r"loss=(\f)", ("metric",)),
+            PatternSpec(r"accuracy\:\s(\f)", ("+metric",)),
+            PatternSpec(r"epoch (\d)", ("+metric",)),
+        ],
+        MatchPolicy.LAST,
+    )
+
+    assert extractor.extract_from_text(LOG_TEXT) == {
+        "metric": ("1", "0.5", "0.7", "1", "2")
+    }
+
+
+def test_plain_name_replaces_accumulated_list() -> None:
+    extractor = build_text_extractor(
+        [
+            PatternSpec(r"loss=(\f)", ("+metric",)),
+            PatternSpec(r"accuracy\:\s(\f)", ("metric",)),
+        ],
+        MatchPolicy.FIRST,
+    )
+
+    assert extractor.extract_from_text(LOG_TEXT) == {"metric": "0.5"}

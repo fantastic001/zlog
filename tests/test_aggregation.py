@@ -62,3 +62,27 @@ def test_non_numeric_and_empty_samples(
 def test_rejects_negative_ddof() -> None:
     with pytest.raises(ValueError):
         MetricAggregator(std_ddof=-1)
+
+
+def test_list_values_become_list_statistic_metrics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    records = [
+        IterationRecord(GROUP_A, 0, {"loss": ("1", "3", "bad")}),
+        IterationRecord(GROUP_A, 1, {"loss": ("5",)}),
+    ]
+
+    summary = MetricAggregator().aggregate(records)
+
+    metrics = summary[GROUP_A]
+    assert set(metrics) == {
+        "loss.mean",
+        "loss.count",
+        "loss.stddev",
+        "loss.min",
+        "loss.max",
+    }
+    assert metrics["loss.mean"].values == (2.0, 5.0)
+    assert metrics["loss.count"].values == (2.0, 1.0)
+    assert metrics["loss.max"].values == (3.0, 5.0)
+    assert "non-numeric" in caplog.text
