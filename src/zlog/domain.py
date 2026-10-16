@@ -14,6 +14,16 @@ class PatternSpec:
 
 
 @dataclass(frozen=True)
+class ReportEntry:
+    name: str
+    type: str
+    description: str = ""
+    options: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+
+@dataclass(frozen=True)
 class AnalysisSpec:
     groups: tuple[str, ...]
     patterns: tuple[PatternSpec, ...]
@@ -21,6 +31,7 @@ class AnalysisSpec:
         default_factory=lambda: MappingProxyType({})
     )
     iteration_separator: str | None = None
+    reports: tuple[ReportEntry, ...] = ()
 
 
 @dataclass(frozen=True)

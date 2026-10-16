@@ -2,8 +2,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from zlog.comparison import GroupComparison, PairwiseComparisonBuilder
-from zlog.domain import GroupKey, MetricSummary, Summary, format_group_label
+from zlog.comparison import (
+    ComparisonResult,
+    GroupComparison,
+    PairwiseComparisonBuilder,
+)
+from zlog.domain import (
+    GroupKey,
+    IterationRecord,
+    MetricSummary,
+    Summary,
+    format_group_label,
+)
 
 Row = Mapping[str, object]
 
@@ -16,6 +26,26 @@ COMPARISON_TITLE_TEMPLATE = "Comparing groups for pattern: {metric}"
 class ReportSection:
     title: str
     rows: tuple[Row, ...] = ()
+    description: str = ""
+    attachments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReportData:
+    summary: Summary
+    records: tuple[IterationRecord, ...] = ()
+
+
+class ReportLayout(Protocol):
+    def build(self, data: ReportData) -> tuple[ReportSection, ...]: ...
+
+
+def list_metrics(summary: Summary) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            metric for group in sorted(summary) for metric in summary[group]
+        )
+    )
 
 
 class MetricCellFormatter(Protocol):
@@ -32,15 +62,21 @@ class StructuredMetricCellFormatter:
         return {"mean": summary.mean, "std": summary.std, "n": summary.count}
 
 
+def describe_comparison_result(result: ComparisonResult) -> Row:
+    return {
+        "mannwhitneyu_stat": result.statistic,
+        "mannwhitneyu_p": result.p_value,
+        "same_distribution": result.same_distribution,
+        "cohen_d": result.cohen_d,
+    }
+
+
 def describe_comparison(comparison: GroupComparison) -> Row:
     first_label = format_group_label(comparison.first)
     second_label = format_group_label(comparison.second)
     return {
         "groups": f"({first_label}) vs ({second_label})",
-        "mannwhitneyu_stat": comparison.result.statistic,
-        "mannwhitneyu_p": comparison.result.p_value,
-        "same_distribution": comparison.result.same_distribution,
-        "cohen_d": comparison.result.cohen_d,
+        **describe_comparison_result(comparison.result),
     }
 
 
@@ -70,11 +106,9 @@ class ComparisonSectionBuilder:
         self._pairwise_builder = pairwise_builder
 
     def build(self, summary: Summary) -> tuple[ReportSection, ...]:
-        metrics = dict.fromkeys(
-            metric for group in sorted(summary) for metric in summary[group]
-        )
         return tuple(
-            self._build_metric_section(summary, metric) for metric in metrics
+            self._build_metric_section(summary, metric)
+            for metric in list_metrics(summary)
         )
 
     def _build_metric_section(
@@ -104,3 +138,11 @@ class ReportBuilder:
             )
         else:
             return (ReportSection(NO_RESULTS_TITLE),)
+
+
+class DefaultReportLayout:
+    def __init__(self, report_builder: ReportBuilder) -> None:
+        self._report_builder = report_builder
+
+    def build(self, data: ReportData) -> tuple[ReportSection, ...]:
+        return self._report_builder.build(data.summary)

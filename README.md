@@ -36,6 +36,7 @@ some-command | zlog-analyze SPEC_FILE - [--stdin-labels LABELS] [options]
 | `--checkpoint FILE` | cache extracted values in a JSON checkpoint; re-runs skip unchanged files |
 | `--restart` | ignore an existing checkpoint and recompute everything |
 | `--output FILE` | write the report to a file instead of stdout |
+| `--plot-dir DIR` | directory for plot images (default: the `--output` file's directory, or the current directory) |
 | `--stdin-labels LABELS` | with `INPUT_DIR` = `-`: the group labels a directory name would give, e.g. `adam-small` |
 | `--log-level LEVEL` | `DEBUG`, `INFO`, `WARNING` (default), `ERROR` |
 
@@ -158,6 +159,89 @@ runs/adam/0.out                    ==== iteration 0 ====
 
 This yields the groups `(adam, small)` and `(adam, large)`, one sample each.
 See `examples/separated_spec.yaml`.
+
+### Report layout (`report`)
+
+Without a `report` key (or with an empty list), the report is the default
+layout: one summary table, then one comparison table per metric. With
+`report`, the report is exactly the listed sections, in order. Each entry is
+a mapping:
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | section title; unique; also the plot file name |
+| `type` | no (`table`) | `table`, `statistics`, `plot`, or a plugin type |
+| `description` | no | text printed under the title |
+| other keys | | type-specific options, listed below; unknown keys are an error |
+
+**Filters.** A filter selects partitions (group keys) by their labels
+(Definition 9):
+
+```yaml
+filter: {optimizer: adam}                  # optimizer = adam
+filter: {optimizer: adam, size: small}     # optimizer = adam AND size = small
+filter: {optimizer: [adam, sgd]}           # optimizer = adam OR optimizer = sgd
+filter: [{optimizer: adam}, {size: large}] # (optimizer = adam) OR (size = large)
+```
+
+A missing filter selects everything. Every group name in a filter must be
+declared in `groups`. Numbers are compared as YAML prints them, so quote
+labels like `'01'`.
+
+| Type | Options | Output |
+|---|---|---|
+| `table` | `filter` | the summary table, restricted to the selected partitions (Definition 10) |
+| `statistics` | `first`, `second` (filters), `pooled` (`false` by default) | Mann–Whitney U and Cohen's d for every metric (Definition 11) |
+| `plot` | `y` (required), `x`, `filter` | a plot image and the plotted data (Definition 12) |
+
+In `table` and `statistics`, every `+name` list is shown as the metrics
+`name.mean`, `name.count`, `name.stddev`, `name.min`, `name.max`
+(Definition 5).
+
+`statistics` without `pooled` keeps the rows of the default comparison
+tables whose pair joins a partition of `first` and a partition of `second`,
+in one table with a `metric` column. With `pooled: true`, all partitions
+of `first` form one sample and all partitions of `second` form another, and
+each metric gets one row. `--same-distributions-only` applies to both.
+
+`plot` picks the plot kind from `x` and `y`:
+
+| `x` | `y` | Plot |
+|---|---|---|
+| absent | a scalar metric, e.g. `accuracy` or `loss.mean` | bar plot: one bar per partition, mean ± std |
+| absent | a `+name` list, e.g. `loss` | line plot: index-wise mean ± std band over the iterations, one line per partition |
+| present | any value | scatter plot: one point per pair of values in an iteration, one colour per partition |
+
+`loss.mean` is a single value per iteration, and `loss` is the whole list.
+For a scatter plot, `x` and `y` must have the same length in an iteration
+(a scalar has length 1); other iterations are skipped with a warning.
+Plots are written as `<name>.<plot_format>`, where characters outside
+`[A-Za-z0-9._-]` in `name` are replaced by `_`. Markdown embeds them as
+images, CSV lists them as `# attachment:` lines and JSON lists them under
+`attachments`.
+
+```yaml
+groups: [optimizer, size]
+patterns:
+  - regex: 'epoch \d+ loss=(\f) lr=(\f)'
+    names: [+loss, +lr]
+  - regex: 'accuracy\:\s(\f)'
+    names: [accuracy]
+report:
+  - name: Adam runs
+    filter: {optimizer: adam}
+  - name: Adam vs SGD pooled
+    type: statistics
+    first: {optimizer: adam}
+    second: {optimizer: sgd}
+    pooled: true
+  - name: Loss curve
+    type: plot
+    filter: {size: small}
+    y: loss
+```
+
+See `examples/report_spec.yaml`.
 
 ## Mathematical definitions
 
@@ -296,6 +380,70 @@ $\sigma^2_X=\sigma^2_Y=2/3$, so $d=-3/\sqrt{2/3}\approx-3.674$.
 (lexicographic order on keys) that both contain the metric are compared.
 This gives $\binom{k'}{2}$ rows for $k'$ such groups.
 
+Let $\mathcal{K}$ be the set of group keys in the summary, and for
+$K \in \mathcal{K}$ let $K(g)$ be the label of group $g$ in $K$.
+
+**Definition 9 (filter).** A filter is a non-empty finite family of
+alternatives $\Phi = (A_1,\dots,A_r)$. Each alternative maps declared group
+names to non-empty label sets, $A_i : \operatorname{dom} A_i \to
+2^{\text{labels}}$ with $\operatorname{dom} A_i \subseteq \mathcal{G}$. Then
+
+$$K \models \Phi \iff \exists i \le r\ \forall g \in \operatorname{dom} A_i :
+K(g) \in A_i(g).$$
+
+A mapping in the specification is one alternative, a list is several, and a
+scalar label $\ell$ stands for $\{\ell\}$. A missing filter is
+$\Phi_\top = (\varnothing)$, the single empty alternative, so
+$K \models \Phi_\top$ for every $K$. Write
+$\mathcal{K}_\Phi = \{K \in \mathcal{K} : K \models \Phi\}$.
+
+*Example.* $\Phi = (\{\text{optimizer}\mapsto\{\text{adam}\},\
+\text{size}\mapsto\{\text{small}\}\},\ \{\text{size}\mapsto\{\text{large}\}\})$
+selects `(adam, small)`, `(adam, large)` and `(sgd, large)`, but not
+`(sgd, small)`.
+
+**Definition 10 (table).** A `table` with filter $\Phi$ is the summary table
+of Definition 6 with rows $\mathcal{K}_\Phi$, sorted.
+
+**Definition 11 (statistics).** Let $\Phi_1$ = `first` and $\Phi_2$ = `second`.
+
+* Filtered pairs (default): for every metric $m$, the rows are the pairs
+  $\{G,H\}$ of the default comparison (Definitions 7, 8) with
+  $(G \models \Phi_1 \wedge H \models \Phi_2) \vee (G \models \Phi_2 \wedge H
+  \models \Phi_1)$.
+* Pooled (`pooled: true`): for every metric $m$,
+  $X_j = X_{G_1,m} \mathbin\Vert \dots \mathbin\Vert X_{G_s,m}$, the
+  concatenation over $\mathcal{K}_{\Phi_j}=\{G_1<\dots<G_s\}$. The row compares
+  $X_1$ with $X_2$ by Definitions 6–8.
+
+A partition in both $\mathcal{K}_{\Phi_1}$ and $\mathcal{K}_{\Phi_2}$
+contributes to both samples.
+
+*Example.* $X_{(\text{adam,small})}=(0,1,2)$, $X_{(\text{adam,large})}=(10,11,12)$,
+with $\Phi_1=\{\text{optimizer}\mapsto\{\text{adam}\}\}$, gives
+$X_1=(0,1,2,10,11,12)$, $\bar x = 6$ and
+$s=\sqrt{154/6}\approx 5.066228$ ($\delta=0$).
+
+**Definition 12 (plot).** Let $\Phi$ be the filter, $R_K$ the iterations
+of partition $K \in \mathcal{K}_\Phi$, and for an iteration $L$ let $v_L(n)$
+be the numbers of value $n$: the parsed list for a `+n` value, a 1-tuple for
+a scalar, and $(\text{stat}(Y))$ for `n.stat` of a list $Y$ (Definition 5).
+
+* Bar ($x$ absent, $y$ never a list in $R_K$): one bar per
+  $K$ with $N>0$, of height $\bar x$ and error $s$ of $X_{K,y}$
+  (Definition 6).
+* Line ($x$ absent, $y$ a list in some iteration of $\bigcup_K R_K$): for each
+  $K$ and index $i$, let $Z_{K,i}=(v_L(y)_i : L \in R_K,\ |v_L(y)|>i)$ with
+  NaN removed. The line is $i \mapsto \bar z_{K,i}$ with band
+  $\bar z_{K,i} \pm s_{K,i}$, for $0 \le i < \max_L |v_L(y)|$.
+* Scatter ($x$ present): the points of $K$ are
+  $\{(v_L(x)_i, v_L(y)_i) : L \in R_K,\ |v_L(x)|=|v_L(y)|,\ i < |v_L(y)|\}$,
+  without points that have a NaN coordinate.
+
+*Example.* With $v_{L_1}(\text{loss})=(3,1)$ and $v_{L_2}(\text{loss})=(5,3,1)$ in
+one partition, $Z_0=(3,5)$, $Z_1=(1,3)$ and $Z_2=(1)$, so the line is
+$(4, 2, 1)$ with band half-widths $(1, 1, 0)$.
+
 ## Configuration
 
 Settings are layered. A later layer overrides an earlier one:
@@ -303,7 +451,8 @@ Settings are layered. A later layer overrides an earlier one:
 1. built-in defaults
 2. `--config file.toml`, table `[zlog]`
 3. environment variables `ZLOG_<SETTING_NAME>`
-4. CLI flags (`--format`, `--match-policy`, `--log-level`, `--checkpoint`)
+4. CLI flags (`--format`, `--match-policy`, `--log-level`, `--checkpoint`,
+   `--plot-dir`)
 
 | Setting | Default | Env var |
 |---|---|---|
@@ -320,6 +469,9 @@ Settings are layered. A later layer overrides an earlier one:
 | `plugins` (feature flag) | `enabled` | `ZLOG_PLUGINS` (`on/off/true/false/1/0`) |
 | `checkpoint_file` | `""` (disabled) | `ZLOG_CHECKPOINT_FILE` |
 | `checkpoint_interval` | `100` | `ZLOG_CHECKPOINT_INTERVAL` |
+| `plot_directory` | `""` (next to `--output`, else cwd) | `ZLOG_PLOT_DIRECTORY` |
+| `plot_format` | `png` (`png`, `svg`, `pdf`) | `ZLOG_PLOT_FORMAT` |
+| `plot_dpi` | `100` (1–1200) | `ZLOG_PLOT_DPI` |
 
 See `examples/zlog.toml`.
 
@@ -377,6 +529,31 @@ def register(registry: PluginRegistry) -> None:
     registry.register_regex_macro(r"\i", r"\d+")
 ```
 
+A report type implements `create_builder(entry, context)`. It validates
+`entry.options` and returns an object whose `build(data: ReportData)`
+returns a `ReportSection`. The layout sets the section's title and
+description from the entry:
+
+```python
+from zlog.report_types import require_known_options
+from zlog.reporting import ReportSection
+
+
+class GroupCountBuilder:
+    def build(self, data):
+        return ReportSection("", ({"groups": len(data.summary)},))
+
+
+class GroupCountReport:
+    def create_builder(self, entry, context):
+        require_known_options(entry, ())
+        return GroupCountBuilder()
+
+
+def register(registry: PluginRegistry) -> None:
+    registry.register_report_type("count", GroupCountReport())
+```
+
 Lifecycle hooks: a hook implements any subset of these methods.
 
 | Event | Method | Called |
@@ -408,7 +585,13 @@ cli ──► application (composition root)
            ├─ list_statistics ListStatisticsReducer (table of list statistics)
            ├─ statistics    DistributionTest protocol, MannWhitneyUTest, compute_cohen_d
            ├─ comparison    MetricComparator, PairwiseComparisonBuilder
-           ├─ reporting     ReportSection builders, cell formatters
+           ├─ reporting     ReportSection builders, cell formatters,
+           │                DefaultReportLayout
+           ├─ group_filter  GroupFilter, GroupFilterParser (Definition 9)
+           ├─ report_types  ReportType table: table / statistics / plot,
+           │                ReportLayoutFactory → ConfiguredReportLayout
+           ├─ plotting      PlotDataBuilder per PlotKind (bar/line/scatter)
+           ├─ plot_drawing  PlotFileLocator, MatplotlibPlotWriter, drawers
            └─ renderers     Markdown / CSV / JSON renderers (OutputFormatPlugin table)
 ```
 

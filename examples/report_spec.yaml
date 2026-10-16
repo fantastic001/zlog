@@ -1,0 +1,30 @@
+groups: [optimizer, size]
+patterns:
+  - regex: 'epoch \d+ loss=(\f) lr=(\f)'
+    names: [+loss, +lr]
+  - regex: 'accuracy\:\s(\f)'
+    names: [accuracy]
+report:
+  - name: Adam runs
+    description: Summary of the adam partitions only.
+    filter: {optimizer: adam}
+  - name: Adam vs SGD per partition
+    type: statistics
+    first: {optimizer: adam}
+    second: {optimizer: sgd}
+  - name: Adam vs SGD pooled
+    type: statistics
+    first: {optimizer: adam}
+    second: {optimizer: sgd}
+    pooled: true
+  - name: Accuracy
+    type: plot
+    y: accuracy
+  - name: Loss curve
+    type: plot
+    filter: [{size: small}, {optimizer: sgd, size: large}]
+    y: loss
+  - name: Loss vs learning rate
+    type: plot
+    x: lr
+    y: loss

@@ -19,6 +19,8 @@ SPREADSHEET_FORMULA_TRIGGERS = ("=", "@", "\t", "\r")
 SPREADSHEET_ESCAPE_PREFIX = "'"
 MARKDOWN_PIPE = "|"
 MARKDOWN_ESCAPED_PIPE = "\\|"
+CSV_COMMENT_PREFIX = "# "
+CSV_ATTACHMENT_PREFIX = "# attachment: "
 
 
 class ReportRenderer(Protocol):
@@ -63,27 +65,63 @@ def build_sanitized_frame(
     return frame.map(sanitize_cell)
 
 
+def flatten_to_line(text: str) -> str:
+    return " ".join(text.split())
+
+
 class MarkdownReportRenderer:
     def render(self, sections: Sequence[ReportSection]) -> str:
         return "\n\n".join(map(self._render_section, sections)) + "\n"
 
+    def _render_section(self, section: ReportSection) -> str:
+        blocks = (
+            f"# {escape_markdown_cell(section.title)}",
+            *self._render_description(section),
+            *self._render_attachments(section),
+            *self._render_rows(section),
+        )
+        return "\n\n".join(blocks)
+
     @staticmethod
-    def _render_section(section: ReportSection) -> str:
-        heading = f"# {escape_markdown_cell(section.title)}"
+    def _render_description(section: ReportSection) -> tuple[str, ...]:
+        match section.description.strip():
+            case "":
+                return ()
+            case description:
+                return (html.escape(description, quote=False),)
+
+    @staticmethod
+    def _render_attachments(section: ReportSection) -> tuple[str, ...]:
+        alt_text = html.escape(flatten_to_line(section.title), quote=False)
+        return tuple(
+            f"![{alt_text}](<{html.escape(link)}>)"
+            for link in section.attachments
+        )
+
+    @staticmethod
+    def _render_rows(section: ReportSection) -> tuple[str, ...]:
         if section.rows:
             frame = build_sanitized_frame(section, escape_markdown_cell)
-            return f"{heading}\n\n{frame.to_markdown(index=False)}"
+            return (frame.to_markdown(index=False),)
         else:
-            return heading
+            return ()
 
 
 class CsvReportRenderer:
     def render(self, sections: Sequence[ReportSection]) -> str:
         return "\n".join(map(self._render_section, sections))
 
-    @staticmethod
-    def _render_section(section: ReportSection) -> str:
-        heading = f"# {section.title}\n"
+    def _render_section(self, section: ReportSection) -> str:
+        attachment_lines = tuple(
+            f"{CSV_ATTACHMENT_PREFIX}{link}\n" for link in section.attachments
+        )
+        heading = "".join(
+            (
+                f"# {section.title}\n",
+                *self._render_description_lines(section),
+                *attachment_lines,
+            )
+        )
         if section.rows:
             frame = build_sanitized_frame(
                 section, neutralize_spreadsheet_formula
@@ -92,17 +130,31 @@ class CsvReportRenderer:
         else:
             return heading
 
+    @staticmethod
+    def _render_description_lines(section: ReportSection) -> tuple[str, ...]:
+        match flatten_to_line(section.description):
+            case "":
+                return ()
+            case description:
+                return (f"{CSV_COMMENT_PREFIX}{description}\n",)
+
 
 class JsonReportRenderer:
     def render(self, sections: Sequence[ReportSection]) -> str:
-        document = [
-            {
-                "title": section.title,
-                "rows": [to_json_compatible(row) for row in section.rows],
-            }
-            for section in sections
-        ]
+        document = list(map(self._describe_section, sections))
         return json.dumps(document, indent=2, allow_nan=False) + "\n"
+
+    @staticmethod
+    def _describe_section(section: ReportSection) -> dict[str, object]:
+        optional_fields = {
+            "description": section.description,
+            "attachments": list(section.attachments),
+        }
+        return {
+            "title": section.title,
+            **{name: value for name, value in optional_fields.items() if value},
+            "rows": [to_json_compatible(row) for row in section.rows],
+        }
 
 
 @dataclass(frozen=True)

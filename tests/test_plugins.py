@@ -5,6 +5,7 @@ import pytest
 from zlog.errors import ConfigurationError
 from zlog.plugins import EntryPointPluginLoader, PluginRegistry
 from zlog.renderers import BUILTIN_OUTPUT_FORMATS
+from zlog.report_types import BUILTIN_REPORT_TYPES
 
 MODULE = "tests.test_plugins"
 
@@ -14,6 +15,7 @@ def register_sample_plugin(registry: PluginRegistry) -> None:
     registry.register_hook("hook")
     registry.register_regex_macro(r"\i", r"\d+")
     registry.register_list_statistic("sum", lambda values, ddof: sum(values))
+    registry.register_report_type(" Grid ", BUILTIN_REPORT_TYPES["table"])
 
 
 def broken_plugin(registry: PluginRegistry) -> None:
@@ -41,6 +43,8 @@ def test_loader_registers_plugins_and_survives_failures(
     assert registry.hooks == ("hook",)
     assert dict(registry.regex_macros) == {r"\i": r"\d+"}
     assert list(registry.list_statistics)[-1] == "sum"
+    assert registry.report_types["grid"] is BUILTIN_REPORT_TYPES["table"]
+    assert set(BUILTIN_REPORT_TYPES) <= set(registry.report_types)
     assert "plugin is broken" in caplog.text
 
 
@@ -62,3 +66,5 @@ def test_registry_rejects_empty_names() -> None:
         registry.register_regex_macro("", "x")
     with pytest.raises(ValueError):
         registry.register_list_statistic("", lambda values, ddof: 0.0)
+    with pytest.raises(ValueError):
+        registry.register_report_type("", BUILTIN_REPORT_TYPES["table"])

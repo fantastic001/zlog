@@ -69,3 +69,15 @@ class VerboseIterationPrinter:
             f"Results: {dict(record.values)}",
             file=self._stream,
         )
+
+
+class IterationRecordCollector:
+    def __init__(self) -> None:
+        self._records: list[IterationRecord] = []
+
+    def on_iteration_analyzed(self, record: IterationRecord) -> None:
+        self._records.append(record)
+
+    @property
+    def records(self) -> tuple[IterationRecord, ...]:
+        return tuple(self._records)

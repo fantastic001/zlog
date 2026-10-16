@@ -82,6 +82,8 @@ def test_non_path_config_file_is_rejected() -> None:
         ("ZLOG_MATCH_POLICY", "middle"),
         ("ZLOG_PLUGINS", "maybe"),
         ("ZLOG_CHECKPOINT_INTERVAL", "0"),
+        ("ZLOG_PLOT_FORMAT", "gif"),
+        ("ZLOG_PLOT_DPI", "0"),
     ],
 )
 def test_invalid_environment_values_are_rejected(

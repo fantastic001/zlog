@@ -6,6 +6,7 @@ from types import MappingProxyType
 from zlog.errors import ConfigurationError
 from zlog.list_statistics import LIST_STATISTICS, ListStatistic
 from zlog.renderers import BUILTIN_OUTPUT_FORMATS, OutputFormatPlugin
+from zlog.report_types import BUILTIN_REPORT_TYPES, ReportType
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class PluginRegistry:
         self._hooks: list[object] = []
         self._regex_macros: dict[str, str] = {}
         self._list_statistics: dict[str, ListStatistic] = dict(LIST_STATISTICS)
+        self._report_types: dict[str, ReportType] = dict(BUILTIN_REPORT_TYPES)
 
     def register_output_format(
         self, name: str, plugin: OutputFormatPlugin
@@ -56,6 +58,14 @@ class PluginRegistry:
         else:
             raise ValueError("list statistic name must not be empty")
 
+    def register_report_type(self, name: str, report_type: ReportType) -> None:
+        normalized_name = name.strip().lower()
+        if normalized_name:
+            self._report_types[normalized_name] = report_type
+            LOGGER.info("registered report type %r", normalized_name)
+        else:
+            raise ValueError("report type name must not be empty")
+
     def find_output_format(self, name: str) -> OutputFormatPlugin:
         try:
             return self._output_formats[name]
@@ -76,6 +86,10 @@ class PluginRegistry:
     @property
     def list_statistics(self) -> Mapping[str, ListStatistic]:
         return MappingProxyType(dict(self._list_statistics))
+
+    @property
+    def report_types(self) -> Mapping[str, ReportType]:
+        return MappingProxyType(dict(self._report_types))
 
 
 class EntryPointPluginLoader:

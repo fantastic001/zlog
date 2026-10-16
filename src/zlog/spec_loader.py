@@ -7,7 +7,7 @@ from types import MappingProxyType
 import yaml
 
 from zlog.capture_names import parse_capture_name
-from zlog.domain import AnalysisSpec, PatternSpec
+from zlog.domain import AnalysisSpec, PatternSpec, ReportEntry
 from zlog.errors import SpecError
 
 LOGGER = logging.getLogger(__name__)
@@ -24,6 +24,9 @@ SPEC_DECODERS: Mapping[str, SpecDecoder] = MappingProxyType(
     }
 )
 FALLBACK_SPEC_DECODER: SpecDecoder = yaml.safe_load
+
+REPORT_SPEC_KEY = "report"
+DEFAULT_REPORT_TYPE = "table"
 
 
 def require_string_list(value: object, field_name: str) -> tuple[str, ...]:
@@ -70,7 +73,58 @@ class SpecParser:
             iteration_separator=self._parse_iteration_separator(
                 raw_spec.get("iteration_separator")
             ),
+            reports=self._parse_reports(raw_spec.get(REPORT_SPEC_KEY)),
         )
+
+    def _parse_reports(self, raw_reports: object) -> tuple[ReportEntry, ...]:
+        match raw_reports:
+            case None:
+                return ()
+            case list():
+                entries = tuple(
+                    self._parse_report_entry(raw_entry, index)
+                    for index, raw_entry in enumerate(raw_reports)
+                )
+                self._require_unique_report_names(entries)
+                return entries
+            case _:
+                raise SpecError(f"'{REPORT_SPEC_KEY}' must be a list")
+
+    @staticmethod
+    def _parse_report_entry(raw_entry: object, index: int) -> ReportEntry:
+        field_name = f"{REPORT_SPEC_KEY}[{index}]"
+        match raw_entry:
+            case {"name": str() as name, **options} if name.strip():
+                report_type = options.pop("type", DEFAULT_REPORT_TYPE)
+                description = options.pop("description", "")
+            case _:
+                raise SpecError(f"{field_name} needs a non-empty 'name' string")
+        match (report_type, description):
+            case (str(), str()) if report_type.strip():
+                return ReportEntry(
+                    name=name.strip(),
+                    type=report_type.strip().lower(),
+                    description=description,
+                    options=MappingProxyType(
+                        {str(key): value for key, value in options.items()}
+                    ),
+                )
+            case _:
+                raise SpecError(
+                    f"{field_name}: 'type' must be a non-empty string and "
+                    "'description' a string"
+                )
+
+    @staticmethod
+    def _require_unique_report_names(entries: tuple[ReportEntry, ...]) -> None:
+        names = [entry.name for entry in entries]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if not duplicates:
+            LOGGER.debug("report entries: %s", names)
+        else:
+            raise SpecError(
+                f"duplicate '{REPORT_SPEC_KEY}' names: {', '.join(duplicates)}"
+            )
 
     @staticmethod
     def _parse_capture_names(raw_names: object, index: int) -> tuple[str, ...]:

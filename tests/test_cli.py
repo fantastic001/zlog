@@ -268,3 +268,101 @@ def test_stdin_without_required_labels_is_usage_error(
     feed_stdin(monkeypatch, STDIN_LOG)
 
     assert main([str(stdin_spec_file), "-"]) == EXIT_USAGE_ERROR
+
+
+REPORT_SPEC = """\
+groups: [optimizer, size]
+patterns:
+  - regex: 'accuracy\\:\\s(\\f)'
+    names: [accuracy]
+  - regex: 'loss=(\\f)'
+    names: [+loss]
+report:
+  - name: Adam only
+    filter: {optimizer: adam}
+  - name: Adam vs others
+    type: statistics
+    first: {optimizer: adam}
+    second: [{optimizer: sgd}, {optimizer: rms}]
+    pooled: true
+  - name: Accuracy
+    type: plot
+    description: Mean accuracy per partition.
+    y: accuracy
+"""
+
+
+def write_report_spec(tmp_path: Path, content: str) -> Path:
+    path = tmp_path / "report_spec.yaml"
+    path.write_text(content)
+    return path
+
+
+def test_configured_report_writes_plots_next_to_output(
+    tmp_path: Path, input_dir: Path
+) -> None:
+    output_file = tmp_path / "out" / "report.md"
+    output_file.parent.mkdir()
+
+    exit_code = main(
+        [
+            str(write_report_spec(tmp_path, REPORT_SPEC)),
+            str(input_dir),
+            "--output",
+            str(output_file),
+        ]
+    )
+
+    report = output_file.read_text()
+    assert exit_code == EXIT_SUCCESS
+    assert report.startswith("# Adam only\n")
+    assert "# Summary for all groups" not in report
+    assert "| loss.mean " in report
+    assert "# Adam vs others" in report
+    assert "Mean accuracy per partition.\n\n![Accuracy](<Accuracy.png>)" in (
+        report
+    )
+    assert (output_file.parent / "Accuracy.png").stat().st_size > 0
+
+
+def test_configured_json_report_uses_plot_directory(
+    tmp_path: Path,
+    input_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            str(write_report_spec(tmp_path, REPORT_SPEC)),
+            str(input_dir),
+            "--format",
+            "json",
+            "--plot-dir",
+            "figures",
+        ]
+    )
+
+    document = json.loads(capsys.readouterr().out)
+    assert exit_code == EXIT_SUCCESS
+    assert [section["title"] for section in document] == [
+        "Adam only",
+        "Adam vs others",
+        "Accuracy",
+    ]
+    assert document[1]["rows"][0]["first"]["n"] == 3
+    assert document[2]["attachments"] == ["figures/Accuracy.png"]
+    assert (tmp_path / "figures" / "Accuracy.png").exists()
+
+
+def test_invalid_report_entry_is_a_usage_error(
+    tmp_path: Path, input_dir: Path
+) -> None:
+    spec = write_report_spec(
+        tmp_path,
+        "groups: [optimizer]\npatterns: []\n"
+        "report:\n  - {name: x, type: plot}\n",
+    )
+
+    assert main([str(spec), str(input_dir)]) == EXIT_USAGE_ERROR

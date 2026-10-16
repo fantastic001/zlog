@@ -63,3 +63,45 @@ def test_cell_sanitizers_leave_non_strings_untouched() -> None:
 
 def test_builtin_formats_are_registered() -> None:
     assert set(BUILTIN_OUTPUT_FORMATS) == {"markdown", "csv", "json"}
+
+
+DESCRIBED_SECTIONS = (
+    ReportSection(
+        "Loss <plot>",
+        ({"partition": "adam", "mean": 1.0},),
+        description="Loss of\nadam & sgd",
+        attachments=("plots/loss plot.png",),
+    ),
+)
+
+
+def test_markdown_renders_description_and_attachments() -> None:
+    report = MarkdownReportRenderer().render(DESCRIBED_SECTIONS)
+
+    assert report.startswith(
+        "# Loss &lt;plot&gt;\n\n"
+        "Loss of\nadam &amp; sgd\n\n"
+        "![Loss &lt;plot&gt;](<plots/loss plot.png>)\n\n"
+        "| partition"
+    )
+
+
+def test_csv_renders_description_and_attachments_as_comments() -> None:
+    lines = CsvReportRenderer().render(DESCRIBED_SECTIONS).splitlines()
+
+    assert lines[:4] == [
+        "# Loss <plot>",
+        "# Loss of adam & sgd",
+        "# attachment: plots/loss plot.png",
+        "partition,mean",
+    ]
+
+
+def test_json_includes_only_present_optional_fields() -> None:
+    document = json.loads(
+        JsonReportRenderer().render((*DESCRIBED_SECTIONS, ReportSection("E")))
+    )
+
+    assert document[0]["description"] == "Loss of\nadam & sgd"
+    assert document[0]["attachments"] == ["plots/loss plot.png"]
+    assert document[1] == {"title": "E", "rows": []}

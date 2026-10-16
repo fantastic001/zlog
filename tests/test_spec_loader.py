@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from zlog.domain import PatternSpec
+from zlog.domain import PatternSpec, ReportEntry
 from zlog.errors import SpecError
 from zlog.spec_loader import SpecLoader, SpecParser
 
@@ -80,3 +80,50 @@ def test_oversized_spec_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(SpecError, match="limit"):
         SpecLoader(SpecParser(), max_spec_bytes=4).load(path)
+
+
+def test_spec_without_report_has_no_entries(spec_file: Path) -> None:
+    assert SpecLoader(SpecParser()).load(spec_file).reports == ()
+
+
+def test_parses_report_entries() -> None:
+    spec = SpecParser().parse(
+        {
+            "report": [
+                {"name": " Overview "},
+                {
+                    "name": "Loss",
+                    "type": " Plot ",
+                    "description": "loss curve",
+                    "y": "loss",
+                    "filter": {"size": "small"},
+                },
+            ]
+        }
+    )
+
+    assert spec.reports[0] == ReportEntry("Overview", "table")
+    assert spec.reports[1].type == "plot"
+    assert spec.reports[1].description == "loss curve"
+    assert dict(spec.reports[1].options) == {
+        "y": "loss",
+        "filter": {"size": "small"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("raw_report", "message"),
+    [
+        ({"name": "a"}, "must be a list"),
+        (["a"], "needs a non-empty 'name'"),
+        ([{"name": " "}], "needs a non-empty 'name'"),
+        ([{"name": "a", "type": ""}], "'type' must be"),
+        ([{"name": "a", "description": 3}], "'type' must be"),
+        ([{"name": "a"}, {"name": "a"}], "duplicate 'report' names: a"),
+    ],
+)
+def test_rejects_invalid_report_entries(
+    raw_report: object, message: str
+) -> None:
+    with pytest.raises(SpecError, match=message):
+        SpecParser().parse({"report": raw_report})

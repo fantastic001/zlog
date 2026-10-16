@@ -1,6 +1,6 @@
 import logging
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 from zlog.domain import (
     ExtractedValue,
@@ -20,6 +20,29 @@ SUMMARY_MEAN_STATISTIC = LIST_STATISTICS["mean"]
 SUMMARY_STD_STATISTIC = LIST_STATISTICS["stddev"]
 
 
+def parse_numeric_items(metric: str, raw_items: Iterable[str]) -> list[float]:
+    numbers: list[float] = []
+    for raw_item in raw_items:
+        try:
+            numbers.append(float(raw_item))
+        except (TypeError, ValueError):
+            LOGGER.warning(
+                "ignoring non-numeric value %r for metric %r",
+                raw_item,
+                metric,
+            )
+    return numbers
+
+
+def summarize_samples(samples: Iterable[float], std_ddof: int) -> MetricSummary:
+    values = tuple(value for value in samples if not math.isnan(value))
+    return MetricSummary(
+        SUMMARY_MEAN_STATISTIC(values, std_ddof),
+        SUMMARY_STD_STATISTIC(values, std_ddof),
+        values,
+    )
+
+
 class MetricAggregator:
     def __init__(
         self,
@@ -36,7 +59,7 @@ class MetricAggregator:
         samples = self._collect_samples(records)
         summary = {
             group: {
-                metric: self._summarize(values)
+                metric: summarize_samples(values, self._std_ddof)
                 for metric, values in metrics.items()
             }
             for group, metrics in samples.items()
@@ -64,32 +87,9 @@ class MetricAggregator:
     ) -> MetricSamples:
         match raw_value:
             case str():
-                return [(metric, self._parse_sample(metric, raw_value))]
+                numbers = parse_numeric_items(metric, (raw_value,))
+                return [(metric, tuple(numbers))]
             case tuple():
-                numbers = [
-                    number
-                    for item in raw_value
-                    for number in self._parse_sample(metric, item)
-                ]
+                numbers = parse_numeric_items(metric, raw_value)
                 reduced = self._list_reducer.reduce(metric, numbers)
                 return [(name, (value,)) for name, value in reduced.items()]
-
-    @staticmethod
-    def _parse_sample(metric: str, raw_value: str) -> tuple[float, ...]:
-        try:
-            return (float(raw_value),)
-        except (TypeError, ValueError):
-            LOGGER.warning(
-                "ignoring non-numeric value %r for metric %r",
-                raw_value,
-                metric,
-            )
-            return ()
-
-    def _summarize(self, samples: Sequence[float]) -> MetricSummary:
-        values = tuple(value for value in samples if not math.isnan(value))
-        return MetricSummary(
-            SUMMARY_MEAN_STATISTIC(values, self._std_ddof),
-            SUMMARY_STD_STATISTIC(values, self._std_ddof),
-            values,
-        )

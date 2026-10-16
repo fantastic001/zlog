@@ -15,6 +15,8 @@ LOGGER = logging.getLogger(__name__)
 ENVIRONMENT_PREFIX = "ZLOG_"
 CONFIG_FILE_SECTION = "zlog"
 DEFAULT_MAX_INPUT_FILE_BYTES = 256 * 1024 * 1024
+SUPPORTED_PLOT_FORMATS = ("png", "svg", "pdf")
+MAXIMUM_PLOT_DPI = 1200
 
 ENABLED_WORDS = frozenset({"1", "true", "yes", "on", "enabled"})
 DISABLED_WORDS = frozenset({"0", "false", "no", "off", "disabled"})
@@ -35,6 +37,9 @@ class Settings:
     plugins: FeatureState = FeatureState.ENABLED
     checkpoint_file: str = ""
     checkpoint_interval: int = 100
+    plot_directory: str = ""
+    plot_format: str = "png"
+    plot_dpi: int = 100
 
 
 def parse_feature_state(raw: str) -> FeatureState:
@@ -74,6 +79,9 @@ SETTING_PARSERS: Mapping[str, SettingParser] = MappingProxyType(
         "plugins": parse_feature_state,
         "checkpoint_file": str,
         "checkpoint_interval": int,
+        "plot_directory": str,
+        "plot_format": lambda raw: raw.strip().lower(),
+        "plot_dpi": int,
     }
 )
 
@@ -113,6 +121,14 @@ SETTING_VALIDATORS: Mapping[str, tuple[SettingValidator, str]] = (
             "checkpoint_interval": (
                 lambda value: value >= 1,
                 "must be at least 1",
+            ),
+            "plot_format": (
+                lambda value: value in SUPPORTED_PLOT_FORMATS,
+                f"must be one of {', '.join(SUPPORTED_PLOT_FORMATS)}",
+            ),
+            "plot_dpi": (
+                lambda value: 1 <= value <= MAXIMUM_PLOT_DPI,
+                f"must lie between 1 and {MAXIMUM_PLOT_DPI}",
             ),
         }
     )

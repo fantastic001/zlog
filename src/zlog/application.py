@@ -26,7 +26,11 @@ from zlog.extraction import (
     compile_patterns,
 )
 from zlog.grouping import SegmentGroupResolver, partition_group_names
-from zlog.hooks import HookDispatcher, VerboseIterationPrinter
+from zlog.hooks import (
+    HookDispatcher,
+    IterationRecordCollector,
+    VerboseIterationPrinter,
+)
 from zlog.inputs import DirectoryInput, InputChannel, StdinInput
 from zlog.list_statistics import ListStatisticsReducer
 from zlog.options import (
@@ -37,12 +41,17 @@ from zlog.options import (
     Verbosity,
 )
 from zlog.pipeline import AnalysisPipeline
+from zlog.plot_drawing import MatplotlibPlotWriter, PlotFileLocator
 from zlog.plugins import PluginRegistry
 from zlog.regex_macros import RegexMacroExpander
 from zlog.renderers import OutputFormatPlugin
+from zlog.report_types import ReportContext, ReportLayoutFactory
 from zlog.reporting import (
     ComparisonSectionBuilder,
+    DefaultReportLayout,
     ReportBuilder,
+    ReportData,
+    ReportLayout,
     SummarySectionBuilder,
 )
 from zlog.spec_loader import SpecLoader, SpecParser
@@ -114,11 +123,13 @@ class AnalysisApplication:
         output_format = self._registry.find_output_format(
             self._settings.output_format
         )
+        report_layout = self._build_report_layout(spec, output_format)
         extraction = self._compile_extraction(spec)
+        collector = IterationRecordCollector()
         with self._open_checkpoint_store(extraction) as store:
-            pipeline = self._build_pipeline(spec, extraction, store)
+            pipeline = self._build_pipeline(spec, extraction, store, collector)
             summary = pipeline.run(spec)
-        sections = self._build_report_builder(output_format).build(summary)
+        sections = report_layout.build(ReportData(summary, collector.records))
         return output_format.create_renderer().render(sections)
 
     def _compile_extraction(self, spec: AnalysisSpec) -> CompiledExtraction:
@@ -181,6 +192,7 @@ class AnalysisApplication:
         spec: AnalysisSpec,
         extraction: CompiledExtraction,
         store: CheckpointStore,
+        collector: IterationRecordCollector,
     ) -> AnalysisPipeline:
         source_extractor = SourceValueExtractor(
             self._input_channel.create_reader(),
@@ -204,26 +216,73 @@ class AnalysisApplication:
                 spec.groups, group_names.extracted_groups
             ),
             aggregator=MetricAggregator(
-                self._settings.std_ddof,
-                ListStatisticsReducer(
-                    self._settings.std_ddof, self._registry.list_statistics
-                ),
+                self._settings.std_ddof, self._create_list_reducer()
             ),
-            hooks=HookDispatcher((*self._registry.hooks, *verbosity_hooks)),
+            hooks=HookDispatcher(
+                (*self._registry.hooks, *verbosity_hooks, collector)
+            ),
         )
 
-    def _build_report_builder(
-        self, output_format: OutputFormatPlugin
-    ) -> ReportBuilder:
-        comparator = MetricComparator(
+    def _create_list_reducer(self) -> ListStatisticsReducer:
+        return ListStatisticsReducer(
+            self._settings.std_ddof, self._registry.list_statistics
+        )
+
+    def _create_comparator(self) -> MetricComparator:
+        return MetricComparator(
             MannWhitneyUTest(),
             self._settings.significance_level,
             self._settings.minimum_sample_size,
         )
+
+    def _build_report_layout(
+        self, spec: AnalysisSpec, output_format: OutputFormatPlugin
+    ) -> ReportLayout:
+        match spec.reports:
+            case ():
+                return DefaultReportLayout(
+                    self._build_report_builder(output_format)
+                )
+            case entries:
+                factory = ReportLayoutFactory(
+                    self._registry.report_types,
+                    self._build_report_context(spec, output_format),
+                )
+                return factory.create(entries)
+
+    def _build_report_builder(
+        self, output_format: OutputFormatPlugin
+    ) -> ReportBuilder:
         pairwise_builder = PairwiseComparisonBuilder(
-            comparator, self._request.comparison_filter
+            self._create_comparator(), self._request.comparison_filter
         )
         return ReportBuilder(
             SummarySectionBuilder(output_format.create_cell_formatter()),
             ComparisonSectionBuilder(pairwise_builder),
+        )
+
+    def _build_report_context(
+        self, spec: AnalysisSpec, output_format: OutputFormatPlugin
+    ) -> ReportContext:
+        return ReportContext(
+            groups=spec.groups,
+            cell_formatter=output_format.create_cell_formatter(),
+            comparator=self._create_comparator(),
+            comparison_filter=self._request.comparison_filter,
+            list_reducer=self._create_list_reducer(),
+            std_ddof=self._settings.std_ddof,
+            plot_files=self._create_plot_file_locator(),
+            plot_writer=MatplotlibPlotWriter(self._settings.plot_dpi),
+        )
+
+    def _create_plot_file_locator(self) -> PlotFileLocator:
+        match self._request.output_file:
+            case None:
+                link_base = Path.cwd()
+            case Path() as output_file:
+                link_base = output_file.parent
+        plot_directory = Path(self._settings.plot_directory or link_base)
+        LOGGER.info("plots go to %s", plot_directory)
+        return PlotFileLocator(
+            plot_directory, link_base, self._settings.plot_format
         )

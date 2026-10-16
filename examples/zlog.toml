@@ -11,3 +11,6 @@ log_level = "WARNING"
 plugins = true
 checkpoint_file = ""
 checkpoint_interval = 100
+plot_directory = ""
+plot_format = "png"
+plot_dpi = 100

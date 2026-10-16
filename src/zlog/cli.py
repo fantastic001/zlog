@@ -36,6 +36,7 @@ CLI_SETTING_OPTIONS = (
     "match_policy",
     "log_level",
     "checkpoint_file",
+    "plot_directory",
 )
 
 VERBOSITY_BY_FLAG: Mapping[bool, Verbosity] = MappingProxyType(
@@ -111,6 +112,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output", type=Path, help="Write the report here, not stdout"
+    )
+    parser.add_argument(
+        "--plot-dir",
+        dest="plot_directory",
+        help=(
+            "Directory for plot images (default: the --output file's "
+            "directory, or the current directory)"
+        ),
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
