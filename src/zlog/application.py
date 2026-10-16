@@ -1,9 +1,10 @@
+import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 from zlog.aggregation import MetricAggregator
 from zlog.checkpoint import (
@@ -15,20 +16,26 @@ from zlog.checkpoint import (
 )
 from zlog.comparison import MetricComparator, PairwiseComparisonBuilder
 from zlog.config import Settings
-from zlog.discovery import RunDirectoryScanner
 from zlog.domain import AnalysisSpec
 from zlog.extraction import (
     CompiledPattern,
-    FileValueExtractor,
     SegmentedTextExtractor,
+    SourceValueExtractor,
     TextValueExtractor,
     build_iteration_splitter,
     compile_patterns,
 )
 from zlog.grouping import SegmentGroupResolver, partition_group_names
 from zlog.hooks import HookDispatcher, VerboseIterationPrinter
+from zlog.inputs import DirectoryInput, InputChannel, StdinInput
 from zlog.list_statistics import ListStatisticsReducer
-from zlog.options import CheckpointMode, ComparisonFilter, Verbosity
+from zlog.options import (
+    CheckpointMode,
+    ComparisonFilter,
+    FeatureState,
+    InputKind,
+    Verbosity,
+)
 from zlog.pipeline import AnalysisPipeline
 from zlog.plugins import PluginRegistry
 from zlog.regex_macros import RegexMacroExpander
@@ -40,6 +47,8 @@ from zlog.reporting import (
 )
 from zlog.spec_loader import SpecLoader, SpecParser
 from zlog.statistics import MannWhitneyUTest
+
+LOGGER = logging.getLogger(__name__)
 
 VERBOSITY_HOOK_FACTORIES: Mapping[
     Verbosity, Callable[[TextIO], tuple[object, ...]]
@@ -60,12 +69,28 @@ class CompiledExtraction:
 @dataclass(frozen=True)
 class AnalysisRequest:
     spec_file: Path
-    input_dir: Path
+    input_path: Path
     output_file: Path | None
     verbosity: Verbosity
     comparison_filter: ComparisonFilter
     checkpoint_mode: CheckpointMode
     settings: Settings
+    input_kind: InputKind = InputKind.DIRECTORY
+    stdin_labels: str = ""
+
+
+INPUT_CHANNEL_FACTORIES: Mapping[
+    InputKind, Callable[[AnalysisRequest, BinaryIO], InputChannel]
+] = MappingProxyType(
+    {
+        InputKind.DIRECTORY: lambda request, stream: DirectoryInput(
+            request.input_path, request.settings
+        ),
+        InputKind.STDIN: lambda request, stream: StdinInput(
+            stream, request.stdin_labels, request.settings
+        ),
+    }
+)
 
 
 class AnalysisApplication:
@@ -73,11 +98,15 @@ class AnalysisApplication:
         self,
         request: AnalysisRequest,
         registry: PluginRegistry,
+        stdin: BinaryIO,
         diagnostics: TextIO,
     ) -> None:
         self._request = request
         self._settings = request.settings
         self._registry = registry
+        self._input_channel = INPUT_CHANNEL_FACTORIES[request.input_kind](
+            request, stdin
+        )
         self._diagnostics = diagnostics
 
     def run(self) -> str:
@@ -88,7 +117,7 @@ class AnalysisApplication:
         extraction = self._compile_extraction(spec)
         with self._open_checkpoint_store(extraction) as store:
             pipeline = self._build_pipeline(spec, extraction, store)
-            summary = pipeline.run(spec, self._request.input_dir)
+            summary = pipeline.run(spec)
         sections = self._build_report_builder(output_format).build(summary)
         return output_format.create_renderer().render(sections)
 
@@ -116,7 +145,10 @@ class AnalysisApplication:
     def _open_checkpoint_store(
         self, extraction: CompiledExtraction
     ) -> CheckpointStore:
-        if self._settings.checkpoint_file:
+        checkpointing = self._input_channel.checkpointing
+        if self._settings.checkpoint_file and (
+            checkpointing is FeatureState.ENABLED
+        ):
             return JsonCheckpointStore(
                 Path(self._settings.checkpoint_file),
                 fingerprint_extraction(
@@ -128,7 +160,21 @@ class AnalysisApplication:
                 self._settings.checkpoint_interval,
             )
         else:
+            self._warn_when_checkpoint_ignored(checkpointing)
             return NullCheckpointStore()
+
+    def _warn_when_checkpoint_ignored(
+        self, checkpointing: FeatureState
+    ) -> None:
+        if self._settings.checkpoint_file:
+            LOGGER.warning(
+                "checkpointing is %s for %s input; ignoring %s",
+                checkpointing.value,
+                self._request.input_kind.value,
+                self._settings.checkpoint_file,
+            )
+        else:
+            LOGGER.debug("checkpointing not requested")
 
     def _build_pipeline(
         self,
@@ -136,27 +182,24 @@ class AnalysisApplication:
         extraction: CompiledExtraction,
         store: CheckpointStore,
     ) -> AnalysisPipeline:
-        file_extractor = FileValueExtractor(
+        source_extractor = SourceValueExtractor(
+            self._input_channel.create_reader(),
             SegmentedTextExtractor(
                 build_iteration_splitter(extraction.separator),
                 TextValueExtractor(
                     extraction.patterns, self._settings.match_policy
                 ),
             ),
-            self._settings.file_encoding,
-            self._settings.max_input_file_bytes,
         )
         verbosity_hooks = VERBOSITY_HOOK_FACTORIES[self._request.verbosity](
             self._diagnostics
         )
         group_names = partition_group_names(spec)
         return AnalysisPipeline(
-            scanner=RunDirectoryScanner(
-                group_names.directory_groups,
-                self._settings.group_separator,
-                self._settings.output_extension,
+            runs=self._input_channel.create_run_source(
+                group_names.directory_groups
             ),
-            extractor=CheckpointedExtractor(file_extractor, store),
+            extractor=CheckpointedExtractor(source_extractor, store),
             resolver=SegmentGroupResolver(
                 spec.groups, group_names.extracted_groups
             ),

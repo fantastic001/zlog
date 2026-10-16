@@ -5,7 +5,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import TextIO
+from typing import BinaryIO, TextIO
 
 from zlog import __version__
 from zlog.application import AnalysisApplication, AnalysisRequest
@@ -15,6 +15,7 @@ from zlog.options import (
     CheckpointMode,
     ComparisonFilter,
     FeatureState,
+    InputKind,
     MatchPolicy,
     Verbosity,
 )
@@ -26,6 +27,7 @@ PROGRAM_NAME = "zlog-analyze"
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_USAGE_ERROR = 2
+STDIN_INPUT_ARGUMENT = "-"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 REPORT_ENCODING = "utf-8"
 
@@ -60,8 +62,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "input_dir",
-        type=Path,
-        help="Directory containing the output files to analyze",
+        help=(
+            "Directory containing the output files to analyze, "
+            f"or '{STDIN_INPUT_ARGUMENT}' to read one log from stdin"
+        ),
+    )
+    parser.add_argument(
+        "--stdin-labels",
+        default="",
+        help=(
+            "Separator-joined group labels for stdin input, used in place "
+            "of a directory name (e.g. adam-small)"
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -118,7 +130,9 @@ def parse_request(
     settings = SettingsLoader().load(environ, arguments.config, cli_overrides)
     return AnalysisRequest(
         spec_file=arguments.spec_file,
-        input_dir=arguments.input_dir,
+        input_path=Path(arguments.input_dir),
+        input_kind=select_input_kind(arguments.input_dir),
+        stdin_labels=arguments.stdin_labels,
         output_file=arguments.output,
         verbosity=VERBOSITY_BY_FLAG[arguments.verbose],
         comparison_filter=COMPARISON_FILTER_BY_FLAG[
@@ -127,6 +141,13 @@ def parse_request(
         checkpoint_mode=CHECKPOINT_MODE_BY_FLAG[arguments.restart],
         settings=settings,
     )
+
+
+def select_input_kind(input_argument: str) -> InputKind:
+    if input_argument == STDIN_INPUT_ARGUMENT:
+        return InputKind.STDIN
+    else:
+        return InputKind.DIRECTORY
 
 
 def build_plugin_registry(plugins: FeatureState) -> PluginRegistry:
@@ -150,11 +171,11 @@ def write_report(report: str, output_file: Path | None, stdout: TextIO) -> None:
 
 
 def execute_request(
-    request: AnalysisRequest, stdout: TextIO, stderr: TextIO
+    request: AnalysisRequest, stdin: BinaryIO, stdout: TextIO, stderr: TextIO
 ) -> int:
     registry = build_plugin_registry(request.settings.plugins)
     try:
-        report = AnalysisApplication(request, registry, stderr).run()
+        report = AnalysisApplication(request, registry, stdin, stderr).run()
         write_report(report, request.output_file, stdout)
     except ZlogError as error:
         LOGGER.error("%s", error)
@@ -179,4 +200,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=sys.stderr,
             force=True,
         )
-        return execute_request(request, sys.stdout, sys.stderr)
+        return execute_request(
+            request, sys.stdin.buffer, sys.stdout, sys.stderr
+        )

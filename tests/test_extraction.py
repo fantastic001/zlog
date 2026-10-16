@@ -1,3 +1,4 @@
+import io
 import re
 from pathlib import Path
 
@@ -6,9 +7,11 @@ import pytest
 from zlog.domain import PatternSpec
 from zlog.errors import ExtractionError
 from zlog.extraction import (
-    FileValueExtractor,
+    BoundedFileReader,
+    BoundedStreamReader,
     SegmentedTextExtractor,
     SeparatorLineSplitter,
+    SourceValueExtractor,
     TextValueExtractor,
     WholeFileSplitter,
     build_iteration_splitter,
@@ -29,14 +32,13 @@ def build_text_extractor(
 
 def build_file_extractor(
     patterns: list[PatternSpec], max_file_bytes: int
-) -> FileValueExtractor:
-    return FileValueExtractor(
+) -> SourceValueExtractor:
+    return SourceValueExtractor(
+        BoundedFileReader("utf-8", max_file_bytes),
         SegmentedTextExtractor(
             WholeFileSplitter(),
             build_text_extractor(patterns, MatchPolicy.LAST),
         ),
-        "utf-8",
-        max_file_bytes,
     )
 
 
@@ -218,3 +220,35 @@ def test_plain_name_replaces_accumulated_list() -> None:
     )
 
     assert extractor.extract_from_text(LOG_TEXT) == {"metric": "0.5"}
+
+
+STDIN_PATH = Path("<stdin>")
+
+
+def test_stream_reader_decodes_bounded_stream() -> None:
+    reader = BoundedStreamReader(io.BytesIO(b"loss=1\xff\n"), "utf-8", 64)
+
+    assert reader.read_text(STDIN_PATH) == "loss=1\ufffd\n"
+
+
+def test_stream_reader_rejects_oversized_stream() -> None:
+    reader = BoundedStreamReader(io.BytesIO(b"123456"), "utf-8", 5)
+
+    with pytest.raises(ExtractionError, match="limit"):
+        reader.read_text(STDIN_PATH)
+
+
+def test_stream_reader_reports_read_failure() -> None:
+    class FailingStream(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise OSError("broken pipe")
+
+    reader = BoundedStreamReader(FailingStream(), "utf-8", 5)
+
+    with pytest.raises(ExtractionError, match="broken pipe"):
+        reader.read_text(STDIN_PATH)
+
+
+def test_stream_reader_requires_positive_limit() -> None:
+    with pytest.raises(ValueError):
+        BoundedStreamReader(io.BytesIO(), "utf-8", 0)

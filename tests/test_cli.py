@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 
@@ -198,3 +199,72 @@ def test_appended_values_are_reported_as_list_statistics(
         f"Comparing groups for pattern: loss.{name}"
         for name in ("mean", "count", "stddev", "min", "max")
     ]
+
+
+STDIN_SPEC = (
+    "groups: [optimizer, size]\n"
+    "iteration_separator: '^---$'\n"
+    "patterns:\n"
+    "  - regex: 'size=(\\w+)'\n"
+    "    names: [size]\n"
+    "  - regex: 'accuracy\\:\\s(\\f)'\n"
+    "    names: [accuracy]\n"
+)
+STDIN_LOG = (
+    "size=small\naccuracy: 1\n---\n"
+    "size=small\naccuracy: 3\n---\n"
+    "size=large\naccuracy: 8\n"
+)
+
+
+@pytest.fixture
+def stdin_spec_file(tmp_path: Path) -> Path:
+    path = tmp_path / "stdin.yaml"
+    path.write_text(STDIN_SPEC)
+    return path
+
+
+def feed_stdin(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+    stream = io.TextIOWrapper(io.BytesIO(content.encode("utf-8")))
+    monkeypatch.setattr("sys.stdin", stream)
+
+
+def test_reads_log_from_stdin(
+    stdin_spec_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    feed_stdin(monkeypatch, STDIN_LOG)
+
+    exit_code = main(
+        [
+            str(stdin_spec_file),
+            "-",
+            "--stdin-labels",
+            "adam",
+            "--format",
+            "json",
+            "--checkpoint",
+            str(tmp_path / "ignored.json"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    rows = json.loads(captured.out)[0]["rows"]
+    assert exit_code == EXIT_SUCCESS
+    assert [(row["optimizer"], row["size"]) for row in rows] == [
+        ("adam", "large"),
+        ("adam", "small"),
+    ]
+    assert rows[1]["accuracy"]["mean"] == 2.0
+    assert "checkpointing is disabled for stdin input" in captured.err
+    assert not (tmp_path / "ignored.json").exists()
+
+
+def test_stdin_without_required_labels_is_usage_error(
+    stdin_spec_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    feed_stdin(monkeypatch, STDIN_LOG)
+
+    assert main([str(stdin_spec_file), "-"]) == EXIT_USAGE_ERROR

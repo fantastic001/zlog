@@ -4,7 +4,7 @@ import pytest
 
 from tests.conftest import RunTreeBuilder
 from zlog.aggregation import MetricAggregator
-from zlog.discovery import RunDirectoryScanner
+from zlog.discovery import DirectoryRunSource, RunDirectoryScanner
 from zlog.domain import AnalysisSpec, IterationRecord
 from zlog.errors import ExtractionError
 from zlog.grouping import SegmentGroupResolver
@@ -48,14 +48,14 @@ def test_pipeline_aggregates_and_skips_failed_iterations(
     root = build_run_tree({"adam": {0: "1", 1: "3", 2: "bad"}, "sgd": {0: "5"}})
     collector = IterationCollector()
     pipeline = AnalysisPipeline(
-        RunDirectoryScanner(SPEC.groups, "-", ".out"),
+        DirectoryRunSource(RunDirectoryScanner(SPEC.groups, "-", ".out"), root),
         FakeExtractor(),
         SegmentGroupResolver(SPEC.groups, ()),
         MetricAggregator(),
         HookDispatcher([collector]),
     )
 
-    summary = pipeline.run(SPEC, root)
+    summary = pipeline.run(SPEC)
 
     assert summary[(("optimizer", "adam"),)]["acc"].mean == 2.0
     assert summary[(("optimizer", "sgd"),)]["acc"].values == (5.0,)
@@ -69,14 +69,14 @@ def test_pipeline_records_every_segment(
     root = build_run_tree({"adam": {0: "1|3|5"}})
     collector = IterationCollector()
     pipeline = AnalysisPipeline(
-        RunDirectoryScanner(SPEC.groups, "-", ".out"),
+        DirectoryRunSource(RunDirectoryScanner(SPEC.groups, "-", ".out"), root),
         FakeExtractor(),
         SegmentGroupResolver(SPEC.groups, ()),
         MetricAggregator(),
         HookDispatcher([collector]),
     )
 
-    summary = pipeline.run(SPEC, root)
+    summary = pipeline.run(SPEC)
 
     assert summary[(("optimizer", "adam"),)]["acc"].values == (1.0, 3.0, 5.0)
     assert [record.segment for record in collector.records] == [0, 1, 2]
@@ -94,14 +94,16 @@ def test_pipeline_groups_segments_by_extracted_labels(
         }
     )
     pipeline = AnalysisPipeline(
-        RunDirectoryScanner(("optimizer",), "-", ".out"),
+        DirectoryRunSource(
+            RunDirectoryScanner(("optimizer",), "-", ".out"), root
+        ),
         GroupedSegmentExtractor(),
         SegmentGroupResolver(spec.groups, ("size",)),
         MetricAggregator(),
         HookDispatcher([]),
     )
 
-    summary = pipeline.run(spec, root)
+    summary = pipeline.run(spec)
 
     small = (("optimizer", "adam"), ("size", "small"))
     large = (("optimizer", "adam"), ("size", "large"))
@@ -117,12 +119,12 @@ def test_pipeline_without_groups_yields_empty_summary(
     root = build_run_tree({"adam": {0: "1"}})
     spec = AnalysisSpec((), ())
     pipeline = AnalysisPipeline(
-        RunDirectoryScanner((), "-", ".out"),
+        DirectoryRunSource(RunDirectoryScanner((), "-", ".out"), root),
         FakeExtractor(),
         SegmentGroupResolver((), ()),
         MetricAggregator(),
         HookDispatcher([]),
     )
 
-    assert pipeline.run(spec, root) == {}
+    assert pipeline.run(spec) == {}
     assert "declares no groups" in caplog.text

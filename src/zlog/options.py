@@ -29,3 +29,8 @@ class Verbosity(Enum):
 class AssignmentMode(Enum):
     REPLACE = "replace"
     APPEND = "append"
+
+
+class InputKind(Enum):
+    DIRECTORY = "directory"
+    STDIN = "stdin"

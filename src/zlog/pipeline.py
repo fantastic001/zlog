@@ -1,10 +1,9 @@
 import logging
 from collections.abc import Mapping
-from pathlib import Path
 from types import MappingProxyType
 
 from zlog.aggregation import MetricAggregator
-from zlog.discovery import RunDirectoryScanner
+from zlog.discovery import RunSource
 from zlog.domain import (
     AnalysisSpec,
     ExtractedValue,
@@ -24,34 +23,32 @@ LOGGER = logging.getLogger(__name__)
 class AnalysisPipeline:
     def __init__(
         self,
-        scanner: RunDirectoryScanner,
+        runs: RunSource,
         extractor: ValueExtractor,
         resolver: SegmentGroupResolver,
         aggregator: MetricAggregator,
         hooks: HookDispatcher,
     ) -> None:
-        self._scanner = scanner
+        self._runs = runs
         self._extractor = extractor
         self._resolver = resolver
         self._aggregator = aggregator
         self._hooks = hooks
 
-    def run(self, spec: AnalysisSpec, input_dir: Path) -> Summary:
-        assert isinstance(input_dir, Path), "input_dir must be a Path"
+    def run(self, spec: AnalysisSpec) -> Summary:
+        assert isinstance(spec, AnalysisSpec), "spec must be an AnalysisSpec"
         self._hooks.on_load(spec)
-        records = self._analyze_runs(spec, input_dir)
+        records = self._analyze_runs(spec)
         summary = self._aggregator.aggregate(records)
         self._hooks.on_terminate(summary)
         assert set(summary) <= {record.group for record in records}
         return summary
 
-    def _analyze_runs(
-        self, spec: AnalysisSpec, input_dir: Path
-    ) -> list[IterationRecord]:
+    def _analyze_runs(self, spec: AnalysisSpec) -> list[IterationRecord]:
         if spec.groups:
             return [
                 record
-                for run in self._scanner.scan(input_dir)
+                for run in self._runs.list_runs()
                 for source in run.sources
                 for record in self._analyze_iteration(run.key, source)
             ]

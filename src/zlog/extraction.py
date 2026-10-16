@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from zlog.capture_names import CaptureTarget, parse_capture_name
 from zlog.domain import ExtractedValue, PatternSpec
@@ -223,28 +223,19 @@ class SegmentedTextExtractor:
         ]
 
 
-class FileValueExtractor:
-    def __init__(
-        self,
-        text_extractor: SegmentedTextExtractor,
-        encoding: str,
-        max_file_bytes: int,
-    ) -> None:
+class TextReader(Protocol):
+    def read_text(self, source: Path) -> str: ...
+
+
+class BoundedFileReader:
+    def __init__(self, encoding: str, max_file_bytes: int) -> None:
         if max_file_bytes > 0:
-            self._text_extractor = text_extractor
             self._encoding = encoding
             self._max_file_bytes = max_file_bytes
         else:
             raise ValueError("max_file_bytes must be positive")
 
-    def extract(self, source: Path) -> SegmentValues:
-        LOGGER.debug("extracting values from %s", source)
-        text = self._read_bounded_text(source)
-        segments = self._text_extractor.extract_segments(text)
-        LOGGER.debug("extracted %s from %s", segments, source)
-        return segments
-
-    def _read_bounded_text(self, source: Path) -> str:
+    def read_text(self, source: Path) -> str:
         try:
             size = source.stat().st_size
             if size <= self._max_file_bytes:
@@ -258,3 +249,43 @@ class FileValueExtractor:
                 )
         except OSError as error:
             raise ExtractionError(f"cannot read {source}: {error}") from error
+
+
+class BoundedStreamReader:
+    def __init__(
+        self, stream: BinaryIO, encoding: str, max_stream_bytes: int
+    ) -> None:
+        if max_stream_bytes > 0:
+            self._stream = stream
+            self._encoding = encoding
+            self._max_stream_bytes = max_stream_bytes
+        else:
+            raise ValueError("max_stream_bytes must be positive")
+
+    def read_text(self, source: Path) -> str:
+        try:
+            data = self._stream.read(self._max_stream_bytes + 1)
+        except OSError as error:
+            raise ExtractionError(f"cannot read {source}: {error}") from error
+        if len(data) <= self._max_stream_bytes:
+            LOGGER.debug("read %d bytes from %s", len(data), source)
+            return data.decode(self._encoding, errors="replace")
+        else:
+            raise ExtractionError(
+                f"{source} exceeds the limit of {self._max_stream_bytes} bytes"
+            )
+
+
+class SourceValueExtractor:
+    def __init__(
+        self, reader: TextReader, text_extractor: SegmentedTextExtractor
+    ) -> None:
+        self._reader = reader
+        self._text_extractor = text_extractor
+
+    def extract(self, source: Path) -> SegmentValues:
+        LOGGER.debug("extracting values from %s", source)
+        text = self._reader.read_text(source)
+        segments = self._text_extractor.extract_segments(text)
+        LOGGER.debug("extracted %s from %s", segments, source)
+        return segments

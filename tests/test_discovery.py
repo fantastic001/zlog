@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import RunTreeBuilder
-from zlog.discovery import RunDirectoryScanner
+from zlog.discovery import (
+    GroupLabelParser,
+    RunDirectoryScanner,
+    StdinRunSource,
+)
 from zlog.errors import InputError
 
 
@@ -75,3 +79,28 @@ def test_rejects_empty_separator_or_extension(
 ) -> None:
     with pytest.raises(ValueError):
         RunDirectoryScanner(["a"], separator, extension)
+
+
+def test_stdin_run_source_builds_single_run_from_labels() -> None:
+    parser = GroupLabelParser(["optimizer", "size"], "-")
+
+    runs = StdinRunSource(parser, "adam-small").list_runs()
+
+    assert [run.key for run in runs] == [
+        (("optimizer", "adam"), ("size", "small"))
+    ]
+    assert [source.iteration for source in runs[0].sources] == [0]
+
+
+def test_stdin_run_source_without_directory_groups_needs_no_labels() -> None:
+    runs = StdinRunSource(GroupLabelParser([], "-"), "").list_runs()
+
+    assert [run.key for run in runs] == [()]
+
+
+@pytest.mark.parametrize("labels", ["", "adam"])
+def test_stdin_run_source_rejects_missing_labels(labels: str) -> None:
+    parser = GroupLabelParser(["optimizer", "size"], "-")
+
+    with pytest.raises(InputError, match="--stdin-labels"):
+        StdinRunSource(parser, labels).list_runs()
