@@ -12,6 +12,7 @@ from zlog.plotting import (
     PlotRequest,
     RecordValueResolver,
     build_plot_data_builders,
+    select_distinguishing_group,
     select_plot_kind,
 )
 from zlog.reporting import ReportData
@@ -60,6 +61,8 @@ def test_bar_plot_uses_group_summaries() -> None:
     assert [series.label for series in plot.series] == ["adam"]
     assert plot.series[0].y == (6.0,)
     assert plot.series[0].spread == (1.0,)
+    assert plot.series[0].category == ""
+    assert plot.category_label == ""
     assert PLOT_ROW_DESCRIBERS[PlotKind.BAR](plot) == (
         {"partition": "adam", "mean": 6.0, "std": 1.0, "n": 2},
     )
@@ -116,4 +119,46 @@ def test_scatter_plot_of_scalars_per_iteration() -> None:
 
     assert [(s.label, s.x, s.y) for s in plot.series] == [
         ("adam", (3.0, 5.0), (5.0, 7.0))
+    ]
+
+
+def key(*labels: str) -> tuple[tuple[str, str], ...]:
+    return tuple(zip(("g1", "g2", "g3"), labels, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("groups", "expected"),
+    [
+        ([key("a", "b", "c"), key("a", "d", "f")], "g2"),
+        ([key("a", "b", "c"), key("x", "b", "f")], "g1"),
+        ([key("a", "b", "c"), key("a", "b", "f")], "g3"),
+        ([key("a", "b", "c"), key("a", "b", "c")], None),
+        ([key("a", "b", "c")], None),
+        ([], None),
+    ],
+)
+def test_select_distinguishing_group_picks_first_differing_group(
+    groups: list[tuple[tuple[str, str], ...]], expected: str | None
+) -> None:
+    assert select_distinguishing_group(groups) == expected
+
+
+def test_bar_plot_categories_follow_first_differing_group() -> None:
+    records = tuple(
+        IterationRecord(key(*labels), 0, {"acc": value})
+        for labels, value in [
+            (("a", "b", "c"), "1"),
+            (("a", "b", "e"), "2"),
+            (("a", "d", "f"), "3"),
+        ]
+    )
+    data = ReportData(MetricAggregator().aggregate(records), records)
+
+    plot = BUILDERS[PlotKind.BAR].build(PlotRequest(y="acc"), data)
+
+    assert plot.category_label == "g2"
+    assert [(s.label, s.category) for s in plot.series] == [
+        ("a, b, c", "b"),
+        ("a, b, e", "b"),
+        ("a, d, f", "d"),
     ]

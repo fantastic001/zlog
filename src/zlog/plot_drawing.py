@@ -1,18 +1,20 @@
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Protocol
 
 import numpy as np
+from matplotlib import rcParams
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.patches import Patch
 
 from zlog.config import SUPPORTED_PLOT_FORMATS
 from zlog.errors import SpecError
-from zlog.plotting import PlotData, PlotKind
+from zlog.plotting import PlotData, PlotKind, PlotSeries
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ BAR_ERROR_CAP_SIZE = 4
 BAR_LABEL_ROTATION = 30
 BAND_OPACITY = 0.2
 SCATTER_MARKER_SIZE = 12
+COLOR_CYCLE_PROPERTY: Final = "axes.prop_cycle"
 
 
 class PlotWriter(Protocol):
@@ -72,14 +75,25 @@ class PlotFileLocator:
             return path.resolve().as_posix()
 
 
+def assign_category_colors(series: Sequence[PlotSeries]) -> dict[str, str]:
+    palette = rcParams[COLOR_CYCLE_PROPERTY].by_key()["color"]
+    categories = dict.fromkeys(item.category for item in series)
+    return {
+        category: palette[index % len(palette)]
+        for index, category in enumerate(categories)
+    }
+
+
 class BarPlotDrawer:
     def draw(self, axes: Axes, plot: PlotData) -> None:
         positions = [series.x[0] for series in plot.series]
+        colors = assign_category_colors(plot.series)
         axes.bar(
             positions,
             [series.y[0] for series in plot.series],
             yerr=np.nan_to_num([series.spread[0] for series in plot.series]),
             capsize=BAR_ERROR_CAP_SIZE,
+            color=[colors[series.category] for series in plot.series],
         )
         axes.set_xticks(
             positions,
@@ -87,6 +101,22 @@ class BarPlotDrawer:
             rotation=BAR_LABEL_ROTATION,
             ha="right",
         )
+        self._draw_category_legend(axes, plot, colors)
+
+    @staticmethod
+    def _draw_category_legend(
+        axes: Axes, plot: PlotData, colors: Mapping[str, str]
+    ) -> None:
+        if plot.category_label:
+            axes.legend(
+                handles=[
+                    Patch(color=color, label=category)
+                    for category, color in colors.items()
+                ],
+                title=plot.category_label,
+            )
+        else:
+            LOGGER.debug("bar plot has a single category, no legend")
 
 
 class LinePlotDrawer:

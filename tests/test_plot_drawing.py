@@ -2,9 +2,12 @@ import math
 from pathlib import Path
 
 import pytest
+from matplotlib.colors import to_hex
+from matplotlib.figure import Figure
 
 from zlog.errors import SpecError
 from zlog.plot_drawing import (
+    BarPlotDrawer,
     MatplotlibPlotWriter,
     PlotFileLocator,
     build_plot_file_stem,
@@ -92,3 +95,36 @@ def test_locator_links_absolutely_across_drives(
     locator = PlotFileLocator(tmp_path, tmp_path, "png")
 
     assert locator.link(tmp_path / "a.png") == (tmp_path / "a.png").as_posix()
+
+
+def test_bar_drawer_colors_bars_by_category() -> None:
+    plot = PlotData(
+        PlotKind.BAR,
+        "",
+        "acc",
+        tuple(
+            PlotSeries(label, (float(index),), (1.0,), (0.0,), (1,), category)
+            for index, (label, category) in enumerate(
+                [("a, b, c", "b"), ("a, b, e", "b"), ("a, d, f", "d")]
+            )
+        ),
+        category_label="g2",
+    )
+    axes = Figure().add_subplot()
+
+    BarPlotDrawer().draw(axes, plot)
+
+    colors = [to_hex(bar.get_facecolor()) for bar in axes.patches]
+    assert colors[0] == colors[1] != colors[2]
+    legend = axes.get_legend()
+    assert legend is not None
+    assert legend.get_title().get_text() == "g2"
+    assert [text.get_text() for text in legend.get_texts()] == ["b", "d"]
+
+
+def test_bar_drawer_without_category_has_no_legend() -> None:
+    axes = Figure().add_subplot()
+
+    BarPlotDrawer().draw(axes, PLOTS[PlotKind.BAR])
+
+    assert axes.get_legend() is None

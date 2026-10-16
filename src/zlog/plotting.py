@@ -37,6 +37,7 @@ class PlotSeries:
     y: tuple[float, ...]
     spread: tuple[float, ...] = ()
     counts: tuple[int, ...] = ()
+    category: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class PlotData:
     x_label: str
     y_label: str
     series: tuple[PlotSeries, ...]
+    category_label: str = ""
 
 
 class PlotDataBuilder(Protocol):
@@ -66,6 +68,17 @@ def group_records(
     for record in records:
         grouped.setdefault(record.group, []).append(record)
     return dict(sorted(grouped.items()))
+
+
+def select_distinguishing_group(groups: Sequence[GroupKey]) -> str | None:
+    labels_by_name: dict[str, set[str]] = {}
+    for group in groups:
+        for name, label in group:
+            labels_by_name.setdefault(name, set()).add(label)
+    return next(
+        (name for name, labels in labels_by_name.items() if len(labels) > 1),
+        None,
+    )
 
 
 def select_plot_kind(request: PlotRequest, data: ReportData) -> PlotKind:
@@ -116,6 +129,13 @@ class RecordValueResolver:
 class BarPlotDataBuilder:
     def build(self, request: PlotRequest, data: ReportData) -> PlotData:
         selected = request.group_filter.select_groups(data.summary)
+        plotted_groups = [
+            group
+            for group in sorted(selected)
+            if request.y in selected[group]
+            and selected[group][request.y].count > 0
+        ]
+        category_group = select_distinguishing_group(plotted_groups)
         series = tuple(
             PlotSeries(
                 label=format_group_label(group),
@@ -123,15 +143,14 @@ class BarPlotDataBuilder:
                 y=(selected[group][request.y].mean,),
                 spread=(selected[group][request.y].std,),
                 counts=(selected[group][request.y].count,),
+                category=dict(group).get(category_group or "", ""),
             )
-            for position, group in enumerate(
-                group
-                for group in sorted(selected)
-                if request.y in selected[group]
-                and selected[group][request.y].count > 0
-            )
+            for position, group in enumerate(plotted_groups)
         )
-        return PlotData(PlotKind.BAR, "", request.y, series)
+        LOGGER.debug("bar plot colored by group %r", category_group)
+        return PlotData(
+            PlotKind.BAR, "", request.y, series, category_group or ""
+        )
 
 
 class LinePlotDataBuilder:
