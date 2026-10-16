@@ -1,0 +1,13 @@
+[zlog]
+significance_level = 0.05
+minimum_sample_size = 2
+std_ddof = 0
+group_separator = "-"
+output_extension = ".out"
+file_encoding = "utf-8"
+match_policy = "last"
+output_format = "markdown"
+log_level = "WARNING"
+plugins = true
+checkpoint_file = ""
+checkpoint_interval = 100

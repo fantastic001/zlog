@@ -1,0 +1,8 @@
+# runtime dependencies (tested versions), install the package itself with: pip install -e .
+numpy==2.5.4
+pandas==3.0.6
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+scipy==1.18.1
+six==1.17.0
+tabulate==0.10.0
