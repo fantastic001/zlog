@@ -16,8 +16,13 @@ from zlog.cli_rules import (
 )
 from zlog.errors import SpecError
 from zlog.options import BindingSection, ResetScope
+from zlog.pattern_aliases import PatternAliasExpander
 from zlog.rules import Binding, MatchRule, ResetSelection
-from zlog.value_sources import ConstantSource, GroupSource
+from zlog.value_sources import (
+    ConstantSource,
+    GroupSource,
+    UnnamedGroupSource,
+)
 from zlog.variable_names import VariableName
 
 
@@ -36,12 +41,14 @@ def test_bindings_take_groups_in_order_across_sections() -> None:
     )
 
     assert first.record == (
-        Binding(VariableName("A"), GroupSource(1)),
-        Binding(VariableName("B"), GroupSource(2)),
+        Binding(VariableName("A"), UnnamedGroupSource(1)),
+        Binding(VariableName("B"), UnnamedGroupSource(2)),
     )
-    assert first.context == (Binding(VariableName("C"), GroupSource(3)),)
-    assert second.record == (Binding(VariableName("A"), GroupSource(1)),)
-    assert second.context == (Binding(VariableName("C", "+"), GroupSource(2)),)
+    assert first.context == (Binding(VariableName("C"), UnnamedGroupSource(3)),)
+    assert second.record == (Binding(VariableName("A"), UnnamedGroupSource(1)),)
+    assert second.context == (
+        Binding(VariableName("C", "+"), UnnamedGroupSource(2)),
+    )
 
 
 def test_explicit_references_and_constants_do_not_advance() -> None:
@@ -52,11 +59,11 @@ def test_explicit_references_and_constants_do_not_advance() -> None:
 
     assert rule.context == (
         Binding(VariableName("a"), GroupSource(3)),
-        Binding(VariableName("d", "@"), GroupSource(2)),
+        Binding(VariableName("d", "@"), UnnamedGroupSource(2)),
     )
     assert rule.record == (
         Binding(VariableName("tag"), ConstantSource("a=b")),
-        Binding(VariableName("b"), GroupSource(1)),
+        Binding(VariableName("b"), UnnamedGroupSource(1)),
         Binding(VariableName("n"), GroupSource("name")),
     )
 
@@ -139,7 +146,7 @@ def test_pending_rule_rejects_unknown_operator() -> None:
 
     rule.add_binding(BindingSection.RECORD, "x")
     assert rule.to_rule(create_rule_factory()).record == (
-        Binding(VariableName("x"), GroupSource(1)),
+        Binding(VariableName("x"), UnnamedGroupSource(1)),
     )
 
 
@@ -148,15 +155,25 @@ def test_cli_form_of_the_example_equals_the_yaml_spec() -> None:
         (EXAMPLES_DIRECTORY / "train.yaml").read_text(encoding="utf-8")
     )
     cli_rules = parse_rules(
-        ["-p", "^=+ run %w", "--reset", "epoch", "--reset", "samples"]
-        + ["--reset", "warnings", "-c", "run", "-c", "+run_index:=1"]
+        ["-p", "^=+ run %(=run)w", "--reset", "epoch", "--reset", "samples"]
+        + ["--reset", "warnings", "-c", "+run_index:=1"]
         + ["-r", "event:=start"]
-        + ["-p", "epoch %d loss=%f acc=%f", "-c", "epoch"]
-        + ["-r", "event:=epoch", "-r", "loss", "-r", "acc"]
-        + ["-p", "processed %d samples", "-c", "+samples"]
-        + ["-r", "event:=progress"]
-        + ["-p", "warning: %s", "-c", "@warnings"]
-        + ["-r", "event:=warning"]
+        + ["-p", "epoch %(=epoch)d loss=%(loss)f acc=%(acc)f"]
+        + ["-r", "event:=epoch"]
+        + ["-p", "processed %(+samples)d samples", "-r", "event:=progress"]
+        + ["-p", "warning: %(@warnings)s", "-r", "event:=warning"]
     )
 
     assert cli_rules == yaml_spec.matches
+
+
+def test_bare_names_skip_named_groups() -> None:
+    (rule,) = parse_rules(["-p", "run %(=run)w epoch %d", "-c", "epoch"])
+    regex = PatternAliasExpander().compile(rule.pattern)
+    found = regex.search("run adam epoch 3")
+    assert found is not None
+
+    assert [
+        (binding.variable.name, binding.source.resolve(found))
+        for binding in rule.context
+    ] == [("run", "adam"), ("epoch", "3")]

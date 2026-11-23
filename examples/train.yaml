@@ -1,17 +1,13 @@
 matches:
-  - pattern: '^=+ run %w'
+  - pattern: '^=+ run %(=run)w'
     reset: [epoch, samples, warnings]
     context:
-      run: 1
       +run_index: {value: 1}
     record:
       event: {value: start}
-  - pattern: 'epoch %d loss=%f acc=%f'
-    context: {epoch: 1}
-    record: {event: {value: epoch}, loss: 2, acc: 3}
-  - pattern: 'processed %d samples'
-    context: {+samples: 1}
+  - pattern: 'epoch %(=epoch)d loss=%(loss)f acc=%(acc)f'
+    record: {event: {value: epoch}}
+  - pattern: 'processed %(+samples)d samples'
     record: {event: {value: progress}}
-  - pattern: 'warning: %s'
-    context: {"@warnings": 1}
+  - pattern: 'warning: %(@warnings)s'
     record: {event: {value: warning}}

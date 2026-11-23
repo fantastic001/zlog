@@ -70,7 +70,9 @@ def test_unknown_output_format_lists_available() -> None:
         PluginRegistry().find_output_format("xml")
 
 
-@pytest.mark.parametrize("prefix", ["", "a", "_", ".", "=", ":", " ", "^1"])
+@pytest.mark.parametrize(
+    "prefix", ["", "a", "_", ".", "=", ":", " ", "^1", "(", "<)"]
+)
 def test_invalid_context_prefixes_are_rejected(prefix: str) -> None:
     assert not is_valid_context_prefix(prefix)
     with pytest.raises(ValueError, match="context update prefix"):

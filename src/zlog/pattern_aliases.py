@@ -1,6 +1,7 @@
 import logging
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
@@ -9,6 +10,9 @@ from zlog.errors import SpecError
 LOGGER = logging.getLogger(__name__)
 
 IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+CAPTURE_NAME_PATTERN = re.compile(
+    rf"(?P<prefix>[^A-Za-z0-9_]*)(?P<group_name>{IDENTIFIER_PATTERN.pattern})"
+)
 LITERAL_PERCENT = "%"
 
 INTEGER_REGEX = r"[+-]?\d+"
@@ -57,6 +61,33 @@ CAPTURE_TEMPLATES: Mapping[CaptureMode, str] = MappingProxyType(
         CaptureMode.SUPPRESSED: "(?:{regex})",
     }
 )
+
+
+@dataclass(frozen=True)
+class CaptureName:
+    prefix: str
+    group_name: str
+
+
+def parse_capture_name(capture: str, pattern: str) -> CaptureName:
+    found = CAPTURE_NAME_PATTERN.fullmatch(capture)
+    if found is not None:
+        return CaptureName(found.group("prefix"), found.group("group_name"))
+    else:
+        raise SpecError(
+            f"capture name {capture!r} in {pattern!r} must be an optional "
+            f"prefix followed by a name matching {IDENTIFIER_PATTERN.pattern}; "
+            "bind other names explicitly, e.g. %f with record: {NAME: 1}"
+        )
+
+
+def find_capture_names(pattern: str) -> tuple[CaptureName, ...]:
+    assert isinstance(pattern, str), "pattern must be a string"
+    return tuple(
+        parse_capture_name(capture, pattern)
+        for token in ALIAS_TOKEN_PATTERN.finditer(pattern)
+        if (capture := token.group("capture")) is not None
+    )
 
 
 def validate_pattern_alias(name: str, regex: str) -> None:
@@ -133,10 +164,8 @@ class PatternAliasExpander:
     def _render_alias(self, token: re.Match[str], pattern: str) -> str:
         alias_name = token.group("short_alias") or token.group("long_alias")
         regex = self._find_alias_regex(alias_name, pattern)
-        mode = self._resolve_capture_mode(token, pattern)
-        return CAPTURE_TEMPLATES[mode].format(
-            name=token.group("capture"), regex=regex
-        )
+        mode, group_name = self._resolve_capture(token, pattern)
+        return CAPTURE_TEMPLATES[mode].format(name=group_name, regex=regex)
 
     def _find_alias_regex(self, alias_name: str, pattern: str) -> str:
         try:
@@ -149,18 +178,14 @@ class PatternAliasExpander:
             ) from error
 
     @staticmethod
-    def _resolve_capture_mode(
+    def _resolve_capture(
         token: re.Match[str], pattern: str
-    ) -> CaptureMode:
+    ) -> tuple[CaptureMode, str | None]:
         match (token.group("suppressed"), token.group("capture")):
             case (None, None):
-                return CaptureMode.POSITIONAL
-            case (None, str() as name) if IDENTIFIER_PATTERN.fullmatch(name):
-                return CaptureMode.NAMED
-            case (None, str() as name):
-                raise SpecError(
-                    f"capture name {name!r} in {pattern!r} must match "
-                    f"{IDENTIFIER_PATTERN.pattern}"
-                )
+                return CaptureMode.POSITIONAL, None
+            case (None, str() as capture):
+                capture_name = parse_capture_name(capture, pattern)
+                return CaptureMode.NAMED, capture_name.group_name
             case _:
-                return CaptureMode.SUPPRESSED
+                return CaptureMode.SUPPRESSED, None

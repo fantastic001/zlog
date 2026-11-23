@@ -6,12 +6,13 @@ from typing import Any
 
 from zlog.errors import SpecError
 from zlog.options import BindingSection, ResetScope
-from zlog.rule_factory import MatchRuleFactory, RawBinding
+from zlog.rule_factory import RawBinding, RuleFactory
 from zlog.rules import MatchRule, ResetSelection
 from zlog.value_sources import (
     ConstantSource,
     GroupReference,
     GroupSource,
+    UnnamedGroupSource,
     ValueSource,
 )
 
@@ -42,7 +43,7 @@ class PendingCliRule:
         self._bindings: dict[BindingSection, list[RawBinding]] = {
             section: [] for section in BindingSection
         }
-        self._implicit_group_count = 0
+        self._bare_name_count = 0
 
     def add_binding(self, section: BindingSection, argument: str) -> None:
         found = BINDING_ARGUMENT_PATTERN.fullmatch(argument)
@@ -72,7 +73,7 @@ class PendingCliRule:
             case ResetScope.NONE | ResetScope.ALL:
                 self._reset_scope = ResetScope.ALL
 
-    def to_rule(self, factory: MatchRuleFactory) -> MatchRule:
+    def to_rule(self, factory: RuleFactory) -> MatchRule:
         return factory.create(
             self._pattern,
             ResetSelection(self._reset_scope, tuple(self._reset_names)),
@@ -83,8 +84,8 @@ class PendingCliRule:
     def _build_source(self, operator: str | None, operand: str) -> ValueSource:
         match operator:
             case None:
-                self._implicit_group_count += 1
-                return GroupSource(self._implicit_group_count)
+                self._bare_name_count += 1
+                return UnnamedGroupSource(self._bare_name_count)
             case "=":
                 return GroupSource(parse_group_reference(operand))
             case ":=":
@@ -161,7 +162,7 @@ class ResetAllAction(RuleModifierAction):
 
 
 def build_cli_rules(
-    pending_rules: Sequence[PendingCliRule], factory: MatchRuleFactory
+    pending_rules: Sequence[PendingCliRule], factory: RuleFactory
 ) -> tuple[MatchRule, ...]:
     rules = tuple(pending.to_rule(factory) for pending in pending_rules)
     LOGGER.debug("built %d rules from the command line", len(rules))
@@ -172,12 +173,14 @@ def add_rule_arguments(parser: argparse.ArgumentParser) -> None:
     rules = parser.add_argument_group(
         "rules",
         "Each --pattern starts a rule; the options after it modify that rule. "
-        "A binding is NAME (next group), NAME=GROUP (index or group name) "
-        "or NAME:=VALUE (constant). Context names may start with + (add) "
-        "or @ (concatenate). In REGEX, %d %f %x %s %w %r capture an "
+        "A binding is NAME (next unnamed group), NAME=GROUP (index or group "
+        "name) or NAME:=VALUE (constant). Context names may start with + "
+        "(add) or @ (concatenate). In REGEX, %d %f %x %s %w %r capture an "
         "integer, a number, a hex number, a non-space token, a word or the "
-        "rest of the line; %(NAME)f names the group, %*f skips it and %% is "
-        "a literal %.",
+        "rest of the line; %*f skips the group and %% is a literal %. "
+        "%(NAME)f binds the record variable NAME, and %(=NAME)f, %(+NAME)f "
+        "and %(@NAME)f bind the context variable NAME (replace, add, "
+        "concatenate).",
     )
     rules.add_argument(
         "-p",

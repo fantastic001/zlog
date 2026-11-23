@@ -15,7 +15,7 @@ from zlog.writers import BUILTIN_OUTPUT_FORMATS, RowWriterFactory
 LOGGER = logging.getLogger(__name__)
 
 PLUGIN_ENTRY_POINT_GROUP = "zlog.plugins"
-FORBIDDEN_PREFIX_CHARACTERS = re.compile(r"[A-Za-z0-9_.:=\s]")
+FORBIDDEN_PREFIX_CHARACTERS = re.compile(r"[A-Za-z0-9_.:=()\s]")
 
 EntryPointProvider = Callable[[], Iterable[EntryPoint]]
 

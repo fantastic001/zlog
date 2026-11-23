@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Collection, Sequence
+from typing import Protocol
 
 from zlog.errors import SpecError
 from zlog.options import ResetScope
@@ -14,6 +15,16 @@ from zlog.variable_names import (
 LOGGER = logging.getLogger(__name__)
 
 RawBinding = tuple[str, ValueSource]
+
+
+class RuleFactory(Protocol):
+    def create(
+        self,
+        pattern: str,
+        reset: ResetSelection,
+        context: Sequence[RawBinding],
+        record: Sequence[RawBinding],
+    ) -> MatchRule: ...
 
 
 def find_duplicates(names: Sequence[str]) -> list[str]:

@@ -2,15 +2,15 @@ import re
 
 import pytest
 
-from tests.conftest import ProcessorBuilder
 from zlog.context_updates import NumericAddUpdate
 from zlog.errors import SpecError
-from zlog.line_processing import MatchedLine
 from zlog.pattern_aliases import (
     BUILTIN_PATTERN_ALIASES,
     FLOAT_REGEX,
     INTEGER_REGEX,
+    CaptureName,
     PatternAliasExpander,
+    find_capture_names,
     validate_pattern_alias,
 )
 
@@ -80,6 +80,10 @@ def test_lemma_float_captures_are_addable(text: str) -> None:
         ("%{w}", r"(\w+)"),
         ("%*{w}", r"(?:\w+)"),
         ("%(n){w}", r"(?P<n>\w+)"),
+        ("%(=n)d", f"(?P<n>{INTEGER_REGEX})"),
+        ("%(+n){w}", r"(?P<n>\w+)"),
+        ("%(@n)s", r"(?P<n>\S+)"),
+        ("%(^n)w", r"(?P<n>\w+)"),
         ("loss=%f", f"loss=({FLOAT_REGEX})"),
         ("100%%", "100%"),
         ("%%d", "%d"),
@@ -105,8 +109,11 @@ def test_expansion(pattern: str, expanded: str) -> None:
         ("a %(n)", r"incomplete alias '%\(' at position 2"),
         ("%{w", r"incomplete alias '%\{'"),
         ("%*(n)d", r"incomplete alias '%\*'"),
-        ("%(1n)d", "capture name '1n' in '%\\(1n\\)d' must match"),
+        ("%(1n)d", r"capture name '1n' in '%\(1n\)d' must be an optional"),
         ("%()d", "capture name ''"),
+        ("%(=)d", "capture name '='"),
+        ("%(+1n)d", "capture name '\\+1n'"),
+        ("%(train.loss)f", "capture name 'train.loss'.*bind other names"),
         ("%(a)d %(a)d", "redefinition of group name 'a'"),
         ("(%d", "invalid regex"),
     ],
@@ -198,16 +205,11 @@ def test_builtin_aliases_are_valid() -> None:
     )
 
 
-def test_named_captures_bind_by_name(
-    build_processor: ProcessorBuilder,
-) -> None:
-    processor = build_processor(
-        "matches:\n"
-        "  - pattern: 'step %(step)d loss=%(loss)f'\n"
-        "    context: {+steps: step}\n"
-        "    record: {loss: loss}\n"
-    )
+def test_find_capture_names_reads_alias_captures_only() -> None:
+    pattern = r"%(=run)w (?P<raw>x) %(+n){w} %d %*d %%(a)d \%(b)d %(loss)f"
 
-    assert processor.process("step 3 loss=0.5") == MatchedLine(
-        0, {"steps": "3"}, {"loss": "0.5"}
+    assert find_capture_names(pattern) == (
+        CaptureName("=", "run"),
+        CaptureName("+", "n"),
+        CaptureName("", "loss"),
     )

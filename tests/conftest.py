@@ -4,13 +4,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from zlog import capture_bindings
 from zlog.compilation import CompiledRule, RuleCompiler
 from zlog.config import Settings
 from zlog.context_state import ContextState
 from zlog.context_updates import BUILTIN_CONTEXT_UPDATES, build_context_updates
 from zlog.line_processing import LineProcessor
 from zlog.pattern_aliases import PatternAliasExpander
-from zlog.rule_factory import MatchRuleFactory
 from zlog.rules import ExtractionSpec, derive_column_layout
 from zlog.spec_parser import SpecParser
 from zlog.spec_validation import SpecConsistencyChecker
@@ -23,8 +23,8 @@ SpecBuilder = Callable[[str], ExtractionSpec]
 ProcessorBuilder = Callable[[str], LineProcessor]
 
 
-def create_rule_factory() -> MatchRuleFactory:
-    return MatchRuleFactory(BUILTIN_CONTEXT_UPDATES.keys())
+def create_rule_factory() -> capture_bindings.CaptureBindingRuleFactory:
+    return capture_bindings.create_rule_factory(BUILTIN_CONTEXT_UPDATES.keys())
 
 
 def parse_yaml_spec(text: str) -> ExtractionSpec:

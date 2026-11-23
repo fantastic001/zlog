@@ -2,15 +2,19 @@ from typing import cast
 
 import pytest
 
-from tests.conftest import create_rule_factory
+from zlog.context_updates import BUILTIN_CONTEXT_UPDATES
 from zlog.errors import SpecError
 from zlog.options import ResetScope
-from zlog.rule_factory import find_duplicates
+from zlog.rule_factory import MatchRuleFactory, find_duplicates
 from zlog.rules import Binding, MatchRule, ResetSelection
 from zlog.value_sources import ConstantSource, GroupSource
 from zlog.variable_names import VariableName
 
 NO_RESET = ResetSelection()
+
+
+def create_rule_factory() -> MatchRuleFactory:
+    return MatchRuleFactory(BUILTIN_CONTEXT_UPDATES.keys())
 
 
 def test_create_parses_names_and_keeps_sources() -> None:

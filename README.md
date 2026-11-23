@@ -44,26 +44,25 @@ debug: unmatched line
 
 ```yaml
 matches:
-  - pattern: '^=+ run %w'         # %w captures a word as group 1
+  - pattern: '^=+ run %(=run)w'   # a word, stored in context variable run
     reset: [epoch, samples, warnings]
     context:
-      run: 1                      # group 1
       +run_index: {value: 1}      # + adds; a constant 1 counts runs
     record:
       event: {value: start}       # a constant tags the row
-  - pattern: 'epoch %d loss=%f acc=%f'   # integer, number, number
-    context: {epoch: 1}
-    record: {event: {value: epoch}, loss: 2, acc: 3}
-  - pattern: 'processed %d samples'
-    context: {+samples: 1}
+  - pattern: 'epoch %(=epoch)d loss=%(loss)f acc=%(acc)f'
+    record: {event: {value: epoch}}
+  - pattern: 'processed %(+samples)d samples'   # + adds to samples
     record: {event: {value: progress}}
-  - pattern: 'warning: %s'        # %s captures text up to whitespace
-    context: {"@warnings": 1}     # @ concatenates; YAML needs the quotes
+  - pattern: 'warning: %(@warnings)s'           # @ concatenates
     record: {event: {value: warning}}
 ```
 
-`%d`, `%f`, `%w` and `%s` are [pattern aliases](#pattern-aliases): each
-stands for a regex and its own capturing group.
+`%w`, `%d`, `%f` and `%s` are [pattern aliases](#pattern-aliases) for a
+word, an integer, a number and text up to whitespace. The name in
+parentheses [binds the capture](#capture-bindings): `%(loss)f` stores it in
+the record variable `loss`, while `%(=epoch)d`, `%(+samples)d` and
+`%(@warnings)s` replace, add to or concatenate onto a context variable.
 
 ```sh
 zlog -s examples/train.yaml examples/train.log --concat-separator '|'
@@ -86,11 +85,11 @@ The same rules can be given on the command line, without a spec file:
 
 ```sh
 zlog --concat-separator '|' \
-  -p '^=+ run %w' --reset epoch --reset samples --reset warnings \
-     -c run -c +run_index:=1 -r event:=start \
-  -p 'epoch %d loss=%f acc=%f' -c epoch -r event:=epoch -r loss -r acc \
-  -p 'processed %d samples' -c +samples -r event:=progress \
-  -p 'warning: %s' -c @warnings -r event:=warning \
+  -p '^=+ run %(=run)w' --reset epoch --reset samples --reset warnings \
+     -c +run_index:=1 -r event:=start \
+  -p 'epoch %(=epoch)d loss=%(loss)f acc=%(acc)f' -r event:=epoch \
+  -p 'processed %(+samples)d samples' -r event:=progress \
+  -p 'warning: %(@warnings)s' -r event:=warning \
   examples/train.log
 ```
 
@@ -107,7 +106,7 @@ Rule options and inputs may be interleaved.
 | Option | Meaning |
 |---|---|
 | `-s`, `--spec FILE` | YAML (`.yaml`, `.yml`, other) or JSON (`.json`) specification |
-| `-p`, `--pattern REGEX` | start a rule; REGEX may use [aliases](#pattern-aliases); write `--pattern=-…` for a regex that starts with `-` |
+| `-p`, `--pattern REGEX` | start a rule; REGEX may use [aliases](#pattern-aliases) and [capture bindings](#capture-bindings); write `--pattern=-…` for a regex that starts with `-` |
 | `-c`, `--context BINDING` | add a context binding to the current rule |
 | `-r`, `--record BINDING` | add a record binding to the current rule |
 | `--reset NAME` | clear context variable `NAME` before the current rule's updates (repeatable) |
@@ -131,7 +130,7 @@ Rules from `--spec` come first; command-line rules are appended after them.
 aliases:                 # optional: pattern aliases, see below
   ts: '\d{2}:\d{2}:\d{2}'
 matches:                 # required: a non-empty list of rules, in order
-  - pattern: PATTERN     # required: a regex with aliases
+  - pattern: PATTERN     # required: a regex with aliases and captures
     reset: all | [NAME, ...]          # optional
     context: {NAME: SOURCE, ...}      # optional
     record:  {NAME: SOURCE, ...}      # optional
@@ -153,19 +152,21 @@ $x$:
 | `@` | concatenate | $c$ if $x$ is unset, else $x \mathbin\Vert s \mathbin\Vert c$ with $s$ = `concat_separator` |
 
 Record names take no prefix. YAML cannot start an unquoted key with `@`, so
-write `"@warnings": 1`. One context variable may use different prefixes in
-different rules: `C` in one rule and `+C` in another is allowed.
+write `"@warnings": 1` (or capture with `%(@warnings)s`). One context
+variable may use different prefixes in different rules: `C` in one rule and
+`+C` in another is allowed.
 
 ### Value sources
 
 | Source | YAML | Command line | Value |
 |---|---|---|---|
-| group by index | `loss: 2` | `-r loss=2` or `-r loss` (next group) | capture of group 2; `0` is the whole match |
+| group by index | `loss: 2` | `-r loss=2` or `-r loss` (next unnamed group) | capture of group 2; `0` is the whole match |
 | group by name | `size: size` | `-c size=size` | capture of `%(size)d` or `(?P<size>…)` |
 | constant | `event: {value: start}` | `-r event:=start` | the text `start` |
 
-A group reference that does not exist in the pattern is an error before any
-input is read.
+A capture such as `%(loss)f` needs no entry at all; see
+[Capture bindings](#capture-bindings). A group reference that does not exist
+in the pattern is an error before any input is read.
 
 *Why constants are not plain strings.* YAML types unquoted values, so
 `phase: 1` is the integer `1` (group 1) while `phase: "1"` is a string, and
@@ -177,15 +178,18 @@ the integer $8$ in YAML and `0.10` is the float $0.1$.
 ### Command-line bindings
 
 A binding is `NAME`, `NAME=GROUP` or `NAME:=VALUE`. Within a rule, the
-$k$-th binding written as a bare `NAME` takes group $k$, counting `-c` and
-`-r` together in the order written. Explicit references and constants do not
-advance that count.
+$k$-th binding written as a bare `NAME` takes the $k$-th **unnamed** group,
+counting `-c` and `-r` together in the order written. Named groups, both
+`%(…)` captures and `(?P<n>…)`, are skipped, because they are referenced by
+name. Explicit references and constants do not advance the count.
 
 *Example.* `-p 'epoch %d loss=%f' -c epoch -r tag:=e -r loss` binds
 `epoch` to group 1, `tag` to the constant `e`, and `loss` to group 2. In
-`--pattern P1 --record A --record B --context C --pattern P2 --record A
---context +C`, rule `P1` binds `A`, `B`, `C` to groups 1, 2, 3, and rule `P2`
-binds `A` and `+C` to groups 1 and 2.
+`-p 'run %(=run)w epoch %d' -c epoch`, the capture binds `run` and `epoch`
+takes group 2, the first unnamed group. In `--pattern P1 --record A --record
+B --context C --pattern P2 --record A --context +C`, where `P1` and `P2` have
+no named groups, rule `P1` binds `A`, `B`, `C` to groups 1, 2, 3, and rule
+`P2` binds `A` and `+C` to groups 1 and 2.
 
 The YAML file and the command line build the same rules; the test
 `test_cli_form_of_the_example_equals_the_yaml_spec` checks this for the
@@ -211,26 +215,17 @@ Write $\mathcal{A}(a)$ for the regex of alias $a$:
 | Written | Expands to | Groups |
 |---|---|---|
 | `%a` or `%{a}` | `(`$\mathcal{A}(a)$`)` | one, the next group number |
-| `%(n)a` or `%(n){a}` | `(?P<n>`$\mathcal{A}(a)$`)` | one, also named `n` |
+| `%(`$\sigma n$`)a` or `%(`$\sigma n$`){a}` | `(?P<n>`$\mathcal{A}(a)$`)` | one, also named `n`, and bound to the variable `n` ([capture bindings](#capture-bindings)) |
 | `%*a` or `%*{a}` | `(?:`$\mathcal{A}(a)$`)` | none |
 | `%%` | `%` | none |
 
-The short form `%a` takes a single letter; `%{a}` takes any alias name.
-Named captures are referenced by name:
-
-```yaml
-matches:
-  - pattern: 'step %(step)d loss=%(loss)f'
-    context: {+steps: step}
-    record: {loss: loss}
-```
-
-On the command line: `-p 'step %(step)d loss=%(loss)f' -c +steps=step -r
-loss=loss`. Bare names still count groups, so `-c +steps -r loss` binds the
-same groups 1 and 2.
+The short form `%a` takes a single letter; `%{a}` takes any alias name. In
+`%(`$\sigma n$`)`, $\sigma$ is an optional prefix such as `=`, `+` or `@`
+and $n$ a name.
 
 **Custom aliases.** `aliases: {ts: '\d{2}:\d{2}:\d{2}'}` in the
-specification defines `%{ts}` (or `%(time){ts}` for a named capture).
+specification defines `%{ts}` (or `%(time){ts}` to bind the record variable
+`time`).
 Plugins add aliases with `register_pattern_alias`. Built-ins come first, then
 plugin aliases, then `aliases` from the specification; a later definition of
 the same name wins, so `aliases: {d: '\d+'}` replaces `%d`. An alias name
@@ -245,9 +240,11 @@ token:
 1. a backslash and the character after it, `\c`, are copied unchanged, so
    `\%d` matches the text `%d`;
 2. `%%` becomes `%`;
-3. `%a` and `%{a}` become `(`$\mathcal{A}(a)$`)`, `%(n)a` and `%(n){a}`
-   become `(?P<n>`$\mathcal{A}(a)$`)`, and `%*a` and `%*{a}` become
-   `(?:`$\mathcal{A}(a)$`)`;
+3. `%a` and `%{a}` become `(`$\mathcal{A}(a)$`)`; `%(`$\sigma n$`)a` and
+   `%(`$\sigma n$`){a}` become `(?P<n>`$\mathcal{A}(a)$`)`, where the prefix
+   $\sigma$ is the longest leading run of characters outside
+   `[A-Za-z0-9_]` (possibly empty) and $n$ is the rest; `%*a` and `%*{a}`
+   become `(?:`$\mathcal{A}(a)$`)`;
 4. every other character is copied unchanged.
 
 Replacements are not scanned again. It is a specification error if $a$ is
@@ -263,7 +260,8 @@ group 3 is also named `tag`.
 
 **Lemma A (group numbering).** Let $g(P)$ be the number of capturing groups
 that $P$ writes itself, and $t(P)$ the number of capturing alias tokens
-(`%a`, `%{a}`, `%(n)a`, `%(n){a}`) in $P$. Then $E(P)$ has exactly
+(`%a`, `%{a}`, `%(`$\sigma n$`)a`, `%(`$\sigma n$`){a}`) in $P$. Then
+$E(P)$ has exactly
 $g(P) + t(P)$ capturing groups, numbered in the order in which they start
 in $P$.
 
@@ -285,11 +283,89 @@ $\square$
 * `%{2}` is an error (`2` is not an alias name); write `%%{2}` to match
   `%%`.
 * `%*(n)a` is an error: a group is either suppressed or named.
-* A capture name may appear once per pattern and must not repeat a
+* A name may be captured once per pattern and must not repeat a
   `(?P<n>…)` written by hand; otherwise the regex is invalid.
 * Every text that `%f` matches is a decimal literal, so `+` never rejects a
   `%f` capture as non-numeric; it can still fail on precision or on
   $\infty + (-\infty)$ (Definition 5).
+
+### Capture bindings
+
+A capture `%(`$\sigma n$`)a` binds the variable $n$ to its own group, with no
+entry under `context` or `record`. The prefix $\sigma$ chooses where the
+value goes:
+
+| Capture | Binds | Same as |
+|---|---|---|
+| `%(loss)f` | record variable `loss` | `record: {loss: loss}` |
+| `%(=epoch)d` | context variable `epoch`, replaced | `context: {epoch: epoch}` |
+| `%(+samples)d` | context variable `samples`, added | `context: {+samples: samples}` |
+| `%(@warnings)s` | context variable `warnings`, concatenated | `context: {"@warnings": warnings}` |
+| `%(^best)f` | context variable `best`, with a plugin prefix `^` | `context: {"^best": best}` |
+
+Without a prefix the value goes to the record, the way a named capture
+becomes a field of the current event in
+[grok](https://www.elastic.co/guide/en/logstash/current/plugins-filters-grok.html)
+or the [Fluent Bit regex
+parser](https://docs.fluentbit.io/manual/pipeline/parsers/regular-expression);
+in `zlog` the event is the row. Context carries state across lines, so it is
+the one that is marked. A plain replace needs the marker `=`, since its
+prefix in `context:` is empty. Plugins cannot register `=` as a prefix, so
+it never clashes.
+
+**Definition B (capture bindings).** Let $\Pi$ be the context update
+prefixes (`+`, `@` and plugin prefixes) and $\mu(\pi)$ the update of
+$\pi \in \Pi$, with $\mu(=) = \mathrm{rep}$. Let a rule have written pattern
+$P$ and written bindings $C$ and $B$, and let $\sigma_1 n_1, \dots,
+\sigma_k n_k$ be the names of the tokens `%(`$\sigma n$`)a` and
+`%(`$\sigma n$`){a}` of $P$, in order, found by the scan of Definition A.
+The rule's bindings are
+
+$$C' = \big((n_i, \mu(\sigma_i), n_i) : \sigma_i \ne \varepsilon\big)
+\mathbin\Vert C, \qquad
+B' = \big((n_i, n_i) : \sigma_i = \varepsilon\big) \mathbin\Vert B,$$
+
+where the source $n_i$ is the group named $n_i$ and $\varepsilon$ is the
+empty prefix. It is a specification error if some $\sigma_i \notin
+\{\varepsilon, =\} \cup \Pi$. Groups written as `(?P<n>…)` bind nothing.
+
+*Example.* For `epoch %(=epoch)d loss=%(loss)f` with
+`record: {event: {value: epoch}}`, $C' = ((\text{epoch}, \mathrm{rep},
+\text{epoch}))$ and $B' = ((\text{loss}, \text{loss}), (\text{event},
+\texttt{epoch}))$.
+
+**Lemma B (equivalence).** Let $R$ be a rule with pattern $P$ and written
+bindings $C$, $B$, and let $R^\circ$ be a rule whose pattern has the same
+expansion $E(P)$ but no `%(…)` tokens (it writes `(?P<n>…)` instead), with
+written bindings $C'$ and $B'$. Then a specification containing $R$ passes
+the checks of Definition 3 exactly when the one containing $R^\circ$ does,
+and both produce the same rows on every input.
+
+*Proof.* The semantics below uses a rule only through its regex and its two
+binding lists (Definition 1). For $R$ these are $E(P)$, $C'$ and $B'$ by
+Definition B. $R^\circ$ has no captures, so Definition B adds nothing, and
+its lists are $C'$ and $B'$ as written, with the same regex $E(P)$. Equal
+inputs to Definitions 2–8 give equal columns, checks and rows. $\square$
+
+**Corner cases.**
+
+* Every `%(…)` capture binds. A group you only want to reference is written
+  as `(?P<n>…)` or referenced by index.
+* Explicit bindings may read a captured group: `%(loss)f` with
+  `context: {+loss_sum: loss}` gives each row its `loss` and a running sum.
+* Binding a variable twice is an error: `%(loss)f` with `record: {loss: 2}`,
+  or `%(=x)d %(+x)d` in one rule. `%(=x)d` in one rule and `%(x)d` in
+  another make `x` both a context and a record variable (Definition 3).
+* Captures come before the written bindings, in pattern order, which fixes
+  the column order (Definition 3).
+* A capture whose group does not take part in the match binds nothing
+  (Definition 2): with `step %(=step)d(?: loss=%(loss)f)?`, the line
+  `step 2` leaves `loss` empty.
+* A variable name with `.` is not a regex group name, so `%(train.loss)f` is
+  an error; write `%f` with `record: {train.loss: 1}`.
+* An unknown prefix, as in `%(-x)d` or `%( x)d`, is an error that lists the
+  valid ones.
+* `reset` may list context variables bound by captures.
 
 ## Semantics
 
@@ -309,6 +385,9 @@ $R_1,\dots,R_m$. Rule $R_j = (P_j, Z_j, C_j, B_j)$ consists of
   update $\mu \in \{\mathrm{rep}, \mathrm{add}, \mathrm{cat}\}$ given by the
   prefix, and a source $s$;
 * record bindings $B_j = ((v_1,s_1),\dots)$.
+
+$C_j$ and $B_j$ are the lists $C'$ and $B'$ of Definition B: the capture
+bindings, then the written ones.
 
 **Definition 2 (value).** If $P_j$ matches line $\ell$ (leftmost match, as
 `re.search`), the value of source $s$ is
@@ -342,8 +421,8 @@ $$J(\ell) = \min\{\, j : P_j \text{ matches } \ell \,\},$$
 
 undefined if no pattern matches.
 
-*Example.* With rules `loss=%d` and `acc=%d`, the line `acc=2 loss=1`
-selects rule 1 only, so its row has `loss` but no `acc`.
+*Example.* With rules `loss=%(loss)d` and `acc=%(acc)d`, the line
+`acc=2 loss=1` selects rule 1 only, so its row has `loss` but no `acc`.
 
 **Definition 5 (updates).** For a current value $x$ (possibly $\bot$) and a
 new value $c$:
@@ -413,6 +492,8 @@ Each property follows from the definitions and is checked by the named test.
 | P8 | *Group numbering* (Lemma A). $E(P)$ has $g(P) + t(P)$ groups, in the order they start in $P$. | `test_pattern_aliases.py::test_lemma_group_numbering`, `test_alias_groups_are_numbered_left_to_right` |
 | P9 | *No rescanning.* An alias whose regex contains `%` matches that `%` literally. | `test_lemma_expansions_are_not_rescanned` |
 | P10 | *Numbers.* Every text `%f` matches is a decimal literal, so `+` never rejects a `%f` capture as non-numeric. | `test_lemma_float_captures_are_addable` |
+| P11 | *Capture equivalence* (Lemma B). A rule with captures has the same header and rows as the rule with its bindings written out. The test checks the quick start against its form with positional groups and explicit bindings. | `test_capture_bindings.py::test_lemma_captures_equal_explicit_bindings` |
+| P12 | *Bare names.* On the command line, the $k$-th bare `NAME` of a rule reads the $k$-th unnamed group of $E(P)$. | `test_cli_rules.py::test_bare_names_skip_named_groups`, `test_value_sources.py::test_unnamed_group_source_counts_only_unnamed_groups` |
 
 *Example (P3 and P2).* In the quick start, `samples` would carry over from
 the adam run into the sgd run without `reset`, because both runs are in one
@@ -480,7 +561,8 @@ was found ("at or after line N").
 | `2` | usage, configuration or specification error |
 
 Specifications, settings and inputs are checked before anything is written:
-bad group references, unknown or invalid aliases, a non-numeric `+` constant,
+bad group references, unknown or invalid aliases, unknown capture prefixes,
+variables bound twice, a non-numeric `+` constant,
 unknown output formats and missing inputs all fail without output.
 
 ## Plugins and hooks
@@ -500,7 +582,8 @@ def register(registry):
   an invalid name or regex raises `ValueError`, and the plugin fails to load.
 * A context update implements `apply(previous: str | None, value: str) -> str`
   and may raise `zlog.errors.InvalidValueError`. Its prefix must not contain
-  letters, digits, `_`, `.`, `:`, `=` or whitespace.
+  letters, digits, `_`, `.`, `:`, `=`, parentheses or whitespace. It works in
+  `context:` keys and in captures alike: `^best: 1` or `%(^best)f`.
 * An output format is a factory `(stream, settings) -> RowWriter`, where a
   `RowWriter` implements `write_header(columns)`, `write_row(values)` and
   `finish()`.

@@ -5,7 +5,7 @@ from typing import Any
 
 from zlog.errors import SpecError
 from zlog.options import ResetScope
-from zlog.rule_factory import MatchRuleFactory, RawBinding
+from zlog.rule_factory import RawBinding, RuleFactory
 from zlog.rules import ExtractionSpec, MatchRule, ResetSelection
 from zlog.value_sources import ConstantSource, GroupSource, ValueSource
 
@@ -88,7 +88,7 @@ def reject_unknown_keys(
 
 
 class SpecParser:
-    def __init__(self, factory: MatchRuleFactory) -> None:
+    def __init__(self, factory: RuleFactory) -> None:
         self._factory = factory
 
     def parse(self, raw_spec: object) -> ExtractionSpec:

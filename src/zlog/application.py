@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from zlog.capture_bindings import create_rule_factory
 from zlog.cli_rules import PendingCliRule, build_cli_rules
 from zlog.compilation import CompiledRule, RuleCompiler
 from zlog.config import Settings
@@ -22,7 +23,6 @@ from zlog.line_sources import (
 from zlog.outputs import AtomicFileTarget, OutputTarget, StandardOutputTarget
 from zlog.pattern_aliases import PatternAliasExpander
 from zlog.plugins import PluginRegistry
-from zlog.rule_factory import MatchRuleFactory
 from zlog.rules import ColumnLayout, ExtractionSpec, derive_column_layout
 from zlog.spec_loader import SpecLoader
 from zlog.spec_parser import SpecParser
@@ -90,7 +90,7 @@ class ExtractionApplication:
         return summary
 
     def _assemble_spec(self) -> ExtractionSpec:
-        factory = MatchRuleFactory(self._updates.keys())
+        factory = create_rule_factory(self._updates.keys())
         cli_rules = build_cli_rules(self._request.cli_rules, factory)
         match self._request.spec_file:
             case None:
