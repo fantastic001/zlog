@@ -1,36 +1,61 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
 
-RunTree = Mapping[str, Mapping[int, str]]
-RunTreeBuilder = Callable[[RunTree], Path]
+from zlog.compilation import CompiledRule, RuleCompiler
+from zlog.config import Settings
+from zlog.context_state import ContextState
+from zlog.context_updates import BUILTIN_CONTEXT_UPDATES, build_context_updates
+from zlog.line_processing import LineProcessor
+from zlog.pattern_aliases import PatternAliasExpander
+from zlog.rule_factory import MatchRuleFactory
+from zlog.rules import ExtractionSpec, derive_column_layout
+from zlog.spec_parser import SpecParser
+from zlog.spec_validation import SpecConsistencyChecker
+
+EXAMPLES_DIRECTORY = Path(__file__).resolve().parent.parent / "examples"
+DEFAULT_SETTINGS = Settings()
+
+FileWriter = Callable[[str, str], Path]
+SpecBuilder = Callable[[str], ExtractionSpec]
+ProcessorBuilder = Callable[[str], LineProcessor]
+
+
+def create_rule_factory() -> MatchRuleFactory:
+    return MatchRuleFactory(BUILTIN_CONTEXT_UPDATES.keys())
+
+
+def parse_yaml_spec(text: str) -> ExtractionSpec:
+    return SpecParser(create_rule_factory()).parse(yaml.safe_load(text))
+
+
+def compile_spec(
+    spec: ExtractionSpec, settings: Settings = DEFAULT_SETTINGS
+) -> tuple[CompiledRule, ...]:
+    SpecConsistencyChecker(settings.path_column).check(spec)
+    patterns = PatternAliasExpander().with_additional_aliases(spec.aliases)
+    updates = build_context_updates(BUILTIN_CONTEXT_UPDATES, settings)
+    layout = derive_column_layout(spec, settings.path_column)
+    return RuleCompiler(patterns, updates).compile(spec.matches, layout)
 
 
 @pytest.fixture
-def build_run_tree(tmp_path: Path) -> RunTreeBuilder:
-    def build(tree: RunTree) -> Path:
-        root = tmp_path / "runs"
-        root.mkdir(exist_ok=True)
-        for directory_name, iterations in tree.items():
-            run_directory = root / directory_name
-            run_directory.mkdir(exist_ok=True)
-            for iteration, content in iterations.items():
-                (run_directory / f"{iteration}.out").write_text(content)
-        return root
+def write_file(tmp_path: Path) -> FileWriter:
+    def write(name: str, content: str) -> Path:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    return write
+
+
+@pytest.fixture
+def build_processor() -> ProcessorBuilder:
+    def build(spec_text: str) -> LineProcessor:
+        rules = compile_spec(parse_yaml_spec(spec_text))
+        return LineProcessor(rules, ContextState())
 
     return build
-
-
-@pytest.fixture
-def spec_file(tmp_path: Path) -> Path:
-    path = tmp_path / "spec.yaml"
-    path.write_text(
-        "groups: [optimizer, size]\n"
-        "patterns:\n"
-        "  - regex: 'accuracy\\:\\s(\\f)'\n"
-        "    names: [accuracy]\n"
-        "  - regex: 'loss=(\\f)'\n"
-        "    names: [loss]\n"
-    )
-    return path

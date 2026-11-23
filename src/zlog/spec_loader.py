@@ -1,166 +1,90 @@
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import yaml
+from yaml.constructor import ConstructorError
 
-from zlog.capture_names import parse_capture_name
-from zlog.domain import AnalysisSpec, PatternSpec, ReportEntry
 from zlog.errors import SpecError
+from zlog.rules import ExtractionSpec
+from zlog.spec_parser import SpecParser
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MAX_SPEC_BYTES = 1024 * 1024
+SPEC_ENCODING = "utf-8"
+YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+DECODE_ERROR_HINTS: Mapping[str, str] = MappingProxyType(
+    {
+        "'@'": 'quote names that start with @, e.g. {"@warnings": 1}',
+        "'`'": "quote values that start with a backtick",
+        "'%'": "quote patterns that start with %, e.g. '%d items'",
+    }
+)
 
 SpecDecoder = Callable[[str], object]
 
-SPEC_DECODERS: Mapping[str, SpecDecoder] = MappingProxyType(
-    {
-        ".yaml": yaml.safe_load,
-        ".yml": yaml.safe_load,
-        ".json": json.loads,
-    }
-)
-FALLBACK_SPEC_DECODER: SpecDecoder = yaml.safe_load
 
-REPORT_SPEC_KEY = "report"
-DEFAULT_REPORT_TYPE = "table"
+def find_duplicate_keys(keys: Iterable[object]) -> list[object]:
+    counts = Counter(key for key in keys if isinstance(key, Hashable))
+    return [key for key, count in counts.items() if count > 1]
 
 
-def require_string_list(value: object, field_name: str) -> tuple[str, ...]:
-    match value:
-        case list() if all(isinstance(item, str) for item in value):
-            return tuple(value)
-        case _:
-            raise SpecError(f"'{field_name}' must be a list of strings")
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    pass
 
 
-def require_string_mapping(value: object, field_name: str) -> Mapping[str, str]:
-    match value:
-        case dict() if all(
-            isinstance(key, str) and isinstance(item, str)
-            for key, item in value.items()
-        ):
-            return MappingProxyType(dict(value))
-        case _:
-            raise SpecError(f"'{field_name}' must map strings to strings")
-
-
-class SpecParser:
-    def parse(self, raw_spec: object) -> AnalysisSpec:
-        match raw_spec:
-            case dict():
-                return self._parse_mapping(raw_spec)
-            case _:
-                raise SpecError("specification must be a mapping")
-
-    def _parse_mapping(self, raw_spec: Mapping[str, object]) -> AnalysisSpec:
-        raw_patterns = raw_spec.get("patterns", [])
-        match raw_patterns:
-            case list():
-                patterns = tuple(
-                    self._parse_pattern(raw_pattern, index)
-                    for index, raw_pattern in enumerate(raw_patterns)
-                )
-            case _:
-                raise SpecError("'patterns' must be a list")
-        return AnalysisSpec(
-            groups=require_string_list(raw_spec.get("groups", []), "groups"),
-            patterns=patterns,
-            macros=require_string_mapping(raw_spec.get("macros", {}), "macros"),
-            iteration_separator=self._parse_iteration_separator(
-                raw_spec.get("iteration_separator")
-            ),
-            reports=self._parse_reports(raw_spec.get(REPORT_SPEC_KEY)),
+def construct_unique_mapping(
+    loader: UniqueKeySafeLoader, node: yaml.MappingNode
+) -> dict[Any, Any]:
+    keys = [
+        loader.construct_object(key_node, deep=True)
+        for key_node, _ in node.value
+        if key_node.tag != YAML_MERGE_TAG
+    ]
+    duplicates = find_duplicate_keys(keys)
+    if not duplicates:
+        return loader.construct_mapping(node, deep=True)
+    else:
+        raise ConstructorError(
+            None,
+            None,
+            f"duplicate mapping keys {duplicates!r}",
+            node.start_mark,
         )
 
-    def _parse_reports(self, raw_reports: object) -> tuple[ReportEntry, ...]:
-        match raw_reports:
-            case None:
-                return ()
-            case list():
-                entries = tuple(
-                    self._parse_report_entry(raw_entry, index)
-                    for index, raw_entry in enumerate(raw_reports)
-                )
-                self._require_unique_report_names(entries)
-                return entries
-            case _:
-                raise SpecError(f"'{REPORT_SPEC_KEY}' must be a list")
 
-    @staticmethod
-    def _parse_report_entry(raw_entry: object, index: int) -> ReportEntry:
-        field_name = f"{REPORT_SPEC_KEY}[{index}]"
-        match raw_entry:
-            case {"name": str() as name, **options} if name.strip():
-                report_type = options.pop("type", DEFAULT_REPORT_TYPE)
-                description = options.pop("description", "")
-            case _:
-                raise SpecError(f"{field_name} needs a non-empty 'name' string")
-        match (report_type, description):
-            case (str(), str()) if report_type.strip():
-                return ReportEntry(
-                    name=name.strip(),
-                    type=report_type.strip().lower(),
-                    description=description,
-                    options=MappingProxyType(
-                        {str(key): value for key, value in options.items()}
-                    ),
-                )
-            case _:
-                raise SpecError(
-                    f"{field_name}: 'type' must be a non-empty string and "
-                    "'description' a string"
-                )
+UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_unique_mapping
+)
 
-    @staticmethod
-    def _require_unique_report_names(entries: tuple[ReportEntry, ...]) -> None:
-        names = [entry.name for entry in entries]
-        duplicates = sorted({name for name in names if names.count(name) > 1})
-        if not duplicates:
-            LOGGER.debug("report entries: %s", names)
-        else:
-            raise SpecError(
-                f"duplicate '{REPORT_SPEC_KEY}' names: {', '.join(duplicates)}"
-            )
 
-    @staticmethod
-    def _parse_capture_names(raw_names: object, index: int) -> tuple[str, ...]:
-        names = require_string_list(raw_names, f"patterns[{index}].names")
-        try:
-            for name in names:
-                parse_capture_name(name)
-        except ValueError as error:
-            raise SpecError(f"patterns[{index}].names: {error}") from error
-        else:
-            return names
+def decode_yaml(text: str) -> object:
+    return yaml.load(text, Loader=UniqueKeySafeLoader)
 
-    @staticmethod
-    def _parse_iteration_separator(raw_separator: object) -> str | None:
-        match raw_separator:
-            case None:
-                return None
-            case str() as separator if separator:
-                return separator
-            case _:
-                raise SpecError(
-                    "'iteration_separator' must be a non-empty regex string"
-                )
 
-    def _parse_pattern(self, raw_pattern: object, index: int) -> PatternSpec:
-        match raw_pattern:
-            case {"regex": str() as regex, "names": names} if regex:
-                return PatternSpec(
-                    regex=regex,
-                    names=self._parse_capture_names(names, index),
-                )
-            case _:
-                raise SpecError(
-                    f"patterns[{index}] needs a non-empty 'regex' "
-                    "string and a 'names' list"
-                )
+def reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    duplicates = find_duplicate_keys(key for key, _ in pairs)
+    if not duplicates:
+        return dict(pairs)
+    else:
+        raise ValueError(f"duplicate object keys {duplicates!r}")
+
+
+def decode_json(text: str) -> object:
+    return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
+
+
+SPEC_DECODERS: Mapping[str, SpecDecoder] = MappingProxyType(
+    {".yaml": decode_yaml, ".yml": decode_yaml, ".json": decode_json}
+)
+FALLBACK_SPEC_DECODER: SpecDecoder = decode_yaml
 
 
 class SpecLoader:
@@ -174,7 +98,7 @@ class SpecLoader:
         self._decoders = decoders
         self._max_spec_bytes = max_spec_bytes
 
-    def load(self, spec_file: Path) -> AnalysisSpec:
+    def load(self, spec_file: Path) -> ExtractionSpec:
         LOGGER.info("loading specification %s", spec_file)
         decoder = self._decoders.get(
             spec_file.suffix.lower(), FALLBACK_SPEC_DECODER
@@ -188,7 +112,7 @@ class SpecLoader:
         try:
             size = spec_file.stat().st_size
             if size <= self._max_spec_bytes:
-                return spec_file.read_text(encoding="utf-8")
+                return spec_file.read_text(encoding=SPEC_ENCODING)
             else:
                 raise SpecError(
                     f"specification {spec_file} has {size} bytes, "
@@ -204,4 +128,14 @@ class SpecLoader:
         try:
             return decoder(text)
         except (yaml.YAMLError, ValueError) as error:
-            raise SpecError(f"cannot decode specification: {error}") from error
+            raise SpecError(
+                f"cannot decode specification: {error}"
+                f"{describe_decode_hints(str(error))}"
+            ) from error
+
+
+def describe_decode_hints(message: str) -> str:
+    hints = [
+        hint for marker, hint in DECODE_ERROR_HINTS.items() if marker in message
+    ]
+    return "".join(f"\nhint: {hint}" for hint in hints)

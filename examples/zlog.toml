@@ -1,16 +1,14 @@
 [zlog]
-significance_level = 0.05
-minimum_sample_size = 2
-std_ddof = 0
-group_separator = "-"
-output_extension = ".out"
 file_encoding = "utf-8"
-match_policy = "last"
-output_format = "markdown"
+decode_errors = "replace"
+max_line_length = 1048576
+output_format = "csv"
+output_encoding = "utf-8"
+csv_delimiter = ","
+concat_separator = ""
+decimal_precision = 50
+formula_escaping = "off"
+path_column = "path"
+stdin_path = "-"
 log_level = "WARNING"
 plugins = true
-checkpoint_file = ""
-checkpoint_interval = 100
-plot_directory = ""
-plot_format = "png"
-plot_dpi = 100

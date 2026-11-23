@@ -1,72 +1,79 @@
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import EntryPoint, entry_points
 from types import MappingProxyType
 
-from zlog.errors import ConfigurationError
-from zlog.list_statistics import LIST_STATISTICS, ListStatistic
-from zlog.renderers import BUILTIN_OUTPUT_FORMATS, OutputFormatPlugin
-from zlog.report_types import BUILTIN_REPORT_TYPES, ReportType
+from zlog.context_updates import BUILTIN_CONTEXT_UPDATES, ContextUpdateFactory
+from zlog.errors import ConfigurationError, SpecError
+from zlog.pattern_aliases import (
+    BUILTIN_PATTERN_ALIASES,
+    validate_pattern_alias,
+)
+from zlog.writers import BUILTIN_OUTPUT_FORMATS, RowWriterFactory
 
 LOGGER = logging.getLogger(__name__)
 
 PLUGIN_ENTRY_POINT_GROUP = "zlog.plugins"
+FORBIDDEN_PREFIX_CHARACTERS = re.compile(r"[A-Za-z0-9_.:=\s]")
 
 EntryPointProvider = Callable[[], Iterable[EntryPoint]]
+
+
+def is_valid_context_prefix(prefix: str) -> bool:
+    return bool(prefix) and FORBIDDEN_PREFIX_CHARACTERS.search(prefix) is None
 
 
 class PluginRegistry:
     def __init__(
         self,
-        output_formats: Mapping[
-            str, OutputFormatPlugin
-        ] = BUILTIN_OUTPUT_FORMATS,
+        output_formats: Mapping[str, RowWriterFactory] = BUILTIN_OUTPUT_FORMATS,
+        context_updates: Mapping[
+            str, ContextUpdateFactory
+        ] = BUILTIN_CONTEXT_UPDATES,
+        pattern_aliases: Mapping[str, str] = BUILTIN_PATTERN_ALIASES,
     ) -> None:
         self._output_formats = dict(output_formats)
+        self._context_updates = dict(context_updates)
         self._hooks: list[object] = []
-        self._regex_macros: dict[str, str] = {}
-        self._list_statistics: dict[str, ListStatistic] = dict(LIST_STATISTICS)
-        self._report_types: dict[str, ReportType] = dict(BUILTIN_REPORT_TYPES)
+        self._pattern_aliases = dict(pattern_aliases)
 
     def register_output_format(
-        self, name: str, plugin: OutputFormatPlugin
+        self, name: str, factory: RowWriterFactory
     ) -> None:
         normalized_name = name.strip().lower()
         if normalized_name:
-            self._output_formats[normalized_name] = plugin
+            self._output_formats[normalized_name] = factory
             LOGGER.info("registered output format %r", normalized_name)
         else:
             raise ValueError("output format name must not be empty")
+
+    def register_context_update(
+        self, prefix: str, factory: ContextUpdateFactory
+    ) -> None:
+        if is_valid_context_prefix(prefix):
+            self._context_updates[prefix] = factory
+            LOGGER.info("registered context update prefix %r", prefix)
+        else:
+            raise ValueError(
+                f"context update prefix {prefix!r} must be non-empty and "
+                f"must not contain {FORBIDDEN_PREFIX_CHARACTERS.pattern}"
+            )
 
     def register_hook(self, hook: object) -> None:
         self._hooks.append(hook)
         LOGGER.info("registered hook %r", hook)
 
-    def register_regex_macro(self, macro: str, replacement: str) -> None:
-        if macro:
-            self._regex_macros[macro] = replacement
-            LOGGER.info("registered regex macro %r", macro)
+    def register_pattern_alias(self, name: str, regex: str) -> None:
+        try:
+            validate_pattern_alias(name, regex)
+        except SpecError as error:
+            raise ValueError(str(error)) from error
         else:
-            raise ValueError("regex macro must not be empty")
+            self._pattern_aliases[name] = regex
+            LOGGER.info("registered pattern alias %r", name)
 
-    def register_list_statistic(
-        self, name: str, statistic: ListStatistic
-    ) -> None:
-        if name:
-            self._list_statistics[name] = statistic
-            LOGGER.info("registered list statistic %r", name)
-        else:
-            raise ValueError("list statistic name must not be empty")
-
-    def register_report_type(self, name: str, report_type: ReportType) -> None:
-        normalized_name = name.strip().lower()
-        if normalized_name:
-            self._report_types[normalized_name] = report_type
-            LOGGER.info("registered report type %r", normalized_name)
-        else:
-            raise ValueError("report type name must not be empty")
-
-    def find_output_format(self, name: str) -> OutputFormatPlugin:
+    def find_output_format(self, name: str) -> RowWriterFactory:
         try:
             return self._output_formats[name]
         except KeyError as error:
@@ -76,20 +83,16 @@ class PluginRegistry:
             ) from error
 
     @property
+    def context_updates(self) -> Mapping[str, ContextUpdateFactory]:
+        return MappingProxyType(dict(self._context_updates))
+
+    @property
     def hooks(self) -> tuple[object, ...]:
         return tuple(self._hooks)
 
     @property
-    def regex_macros(self) -> Mapping[str, str]:
-        return MappingProxyType(dict(self._regex_macros))
-
-    @property
-    def list_statistics(self) -> Mapping[str, ListStatistic]:
-        return MappingProxyType(dict(self._list_statistics))
-
-    @property
-    def report_types(self) -> Mapping[str, ReportType]:
-        return MappingProxyType(dict(self._report_types))
+    def pattern_aliases(self) -> Mapping[str, str]:
+        return MappingProxyType(dict(self._pattern_aliases))
 
 
 class EntryPointPluginLoader:

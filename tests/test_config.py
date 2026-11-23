@@ -1,17 +1,21 @@
 from dataclasses import fields
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from tests.conftest import EXAMPLES_DIRECTORY
 from zlog.config import (
     SETTING_PARSERS,
     Settings,
     SettingsLoader,
     is_known_encoding,
+    is_known_error_handler,
+    is_valid_csv_delimiter,
     parse_feature_state,
 )
 from zlog.errors import ConfigurationError
-from zlog.options import FeatureState, MatchPolicy
+from zlog.options import FeatureState, FormulaEscaping
 
 
 def test_every_setting_has_a_parser() -> None:
@@ -25,20 +29,26 @@ def test_defaults_without_any_source() -> None:
 def test_layers_override_in_order(tmp_path: Path) -> None:
     config_file = tmp_path / "zlog.toml"
     config_file.write_text(
-        "[zlog]\nsignificance_level = 0.01\noutput_format = 'csv'\n"
-        "plugins = false\nmatch_policy = 'first'\n"
+        "[zlog]\nconcat_separator = '|'\noutput_format = 'json'\n"
+        "plugins = false\ndecimal_precision = 20\n"
     )
-    environ = {"ZLOG_OUTPUT_FORMAT": "json", "UNRELATED": "x"}
+    environ = {
+        "ZLOG_OUTPUT_FORMAT": "JSONL",
+        "ZLOG_FORMULA_ESCAPING": "Tab",
+        "UNRELATED": "x",
+    }
 
     settings = SettingsLoader().load(
-        environ, config_file, {"log_level": "debug"}
+        environ, config_file, {"log_level": "debug", "csv_delimiter": ";"}
     )
 
-    assert settings.significance_level == 0.01
-    assert settings.output_format == "json"
+    assert settings.concat_separator == "|"
+    assert settings.output_format == "jsonl"
+    assert settings.formula_escaping is FormulaEscaping.TAB
     assert settings.log_level == "DEBUG"
+    assert settings.csv_delimiter == ";"
+    assert settings.decimal_precision == 20
     assert settings.plugins is FeatureState.DISABLED
-    assert settings.match_policy is MatchPolicy.FIRST
 
 
 def test_config_file_without_section_uses_defaults(tmp_path: Path) -> None:
@@ -66,24 +76,27 @@ def test_missing_config_file_is_rejected(tmp_path: Path) -> None:
 
 def test_non_path_config_file_is_rejected() -> None:
     with pytest.raises(ConfigurationError, match="must be a path"):
-        SettingsLoader().read_config_file("zlog.toml")  # type: ignore[arg-type]
+        SettingsLoader().read_config_file(cast("Path", "zlog.toml"))
 
 
 @pytest.mark.parametrize(
     ("variable", "value"),
     [
-        ("ZLOG_SIGNIFICANCE_LEVEL", "abc"),
-        ("ZLOG_SIGNIFICANCE_LEVEL", "1.5"),
-        ("ZLOG_SIGNIFICANCE_LEVEL", "nan"),
-        ("ZLOG_MINIMUM_SAMPLE_SIZE", "0"),
-        ("ZLOG_GROUP_SEPARATOR", ""),
         ("ZLOG_FILE_ENCODING", "no-such-codec"),
+        ("ZLOG_OUTPUT_ENCODING", "no-such-codec"),
+        ("ZLOG_DECODE_ERRORS", "shrug"),
+        ("ZLOG_MAX_LINE_LENGTH", "0"),
+        ("ZLOG_MAX_LINE_LENGTH", "many"),
+        ("ZLOG_OUTPUT_FORMAT", " "),
+        ("ZLOG_CSV_DELIMITER", ",,"),
+        ("ZLOG_CSV_DELIMITER", '"'),
+        ("ZLOG_DECIMAL_PRECISION", "0"),
+        ("ZLOG_DECIMAL_PRECISION", "10001"),
+        ("ZLOG_FORMULA_ESCAPING", "sometimes"),
+        ("ZLOG_PATH_COLUMN", "1path"),
+        ("ZLOG_STDIN_PATH", ""),
         ("ZLOG_LOG_LEVEL", "chatty"),
-        ("ZLOG_MATCH_POLICY", "middle"),
         ("ZLOG_PLUGINS", "maybe"),
-        ("ZLOG_CHECKPOINT_INTERVAL", "0"),
-        ("ZLOG_PLOT_FORMAT", "gif"),
-        ("ZLOG_PLOT_DPI", "0"),
     ],
 )
 def test_invalid_environment_values_are_rejected(
@@ -106,6 +119,19 @@ def test_parse_feature_state(raw: str, expected: FeatureState) -> None:
     assert parse_feature_state(raw) is expected
 
 
-def test_is_known_encoding() -> None:
+def test_codec_and_delimiter_checks() -> None:
     assert is_known_encoding("latin-1")
     assert not is_known_encoding("klingon")
+    assert is_known_error_handler("backslashreplace")
+    assert not is_known_error_handler("ignore-politely")
+    assert is_valid_csv_delimiter("\t")
+    assert not is_valid_csv_delimiter("\n")
+
+
+def test_example_config_lists_every_default() -> None:
+    example = EXAMPLES_DIRECTORY / "zlog.toml"
+
+    assert SettingsLoader().read_config_file(example).keys() == set(
+        SETTING_PARSERS
+    )
+    assert SettingsLoader().load({}, example, {}) == Settings()

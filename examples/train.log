@@ -1,0 +1,10 @@
+==== run adam ====
+epoch 1 loss=0.90 acc=0.50
+processed 100 samples
+epoch 2 loss=0.70 acc=0.61
+warning: lr-high
+processed 150 samples
+warning: nan-loss
+==== run sgd ====
+epoch 1 loss=1.20 acc=0.40
+debug: unmatched line

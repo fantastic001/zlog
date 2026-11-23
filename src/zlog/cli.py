@@ -4,159 +4,120 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from types import MappingProxyType
-from typing import BinaryIO, TextIO
 
 from zlog import __version__
-from zlog.application import AnalysisApplication, AnalysisRequest
-from zlog.config import SettingsLoader
-from zlog.errors import ConfigurationError, ZlogError
-from zlog.options import (
-    CheckpointMode,
-    ComparisonFilter,
-    FeatureState,
-    InputKind,
-    MatchPolicy,
-    Verbosity,
+from zlog.application import (
+    STDIN_ARGUMENT,
+    ExtractionApplication,
+    ExtractionRequest,
+    StandardStreams,
 )
+from zlog.cli_rules import add_rule_arguments
+from zlog.config import SettingsLoader
+from zlog.errors import (
+    ConfigurationError,
+    ExtractionError,
+    InputError,
+    SpecError,
+    ZlogError,
+)
+from zlog.options import FeatureState, FormulaEscaping
 from zlog.plugins import EntryPointPluginLoader, PluginRegistry
 
 LOGGER = logging.getLogger(__name__)
 
-PROGRAM_NAME = "zlog-analyze"
+PROGRAM_NAME = "zlog"
 EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_USAGE_ERROR = 2
-STDIN_INPUT_ARGUMENT = "-"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-REPORT_ENCODING = "utf-8"
 
 CLI_SETTING_OPTIONS = (
     "output_format",
-    "match_policy",
     "log_level",
-    "checkpoint_file",
-    "plot_directory",
+    "concat_separator",
+    "csv_delimiter",
+    "formula_escaping",
+    "file_encoding",
 )
 
-VERBOSITY_BY_FLAG: Mapping[bool, Verbosity] = MappingProxyType(
-    {False: Verbosity.QUIET, True: Verbosity.VERBOSE}
-)
-COMPARISON_FILTER_BY_FLAG: Mapping[bool, ComparisonFilter] = MappingProxyType(
-    {
-        False: ComparisonFilter.ALL,
-        True: ComparisonFilter.SAME_DISTRIBUTION_ONLY,
-    }
-)
-CHECKPOINT_MODE_BY_FLAG: Mapping[bool, CheckpointMode] = MappingProxyType(
-    {False: CheckpointMode.RESUME, True: CheckpointMode.RESTART}
+EXIT_CODES_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
+    (ConfigurationError, EXIT_USAGE_ERROR),
+    (SpecError, EXIT_USAGE_ERROR),
+    (InputError, EXIT_FAILURE),
+    (ExtractionError, EXIT_FAILURE),
+    (ZlogError, EXIT_FAILURE),
+    (OSError, EXIT_FAILURE),
 )
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM_NAME,
-        description="Analyze outputs from different iterations",
-    )
-    parser.add_argument(
-        "spec_file", type=Path, help="Specification file for the analysis"
-    )
-    parser.add_argument(
-        "input_dir",
-        help=(
-            "Directory containing the output files to analyze, "
-            f"or '{STDIN_INPUT_ARGUMENT}' to read one log from stdin"
+        description=(
+            "Match log lines with regex rules and write one CSV or JSON row "
+            "per matched line, with persistent context variables and "
+            "per-line record variables."
         ),
     )
     parser.add_argument(
-        "--stdin-labels",
-        default="",
-        help=(
-            "Separator-joined group labels for stdin input, used in place "
-            "of a directory name (e.g. adam-small)"
-        ),
+        "inputs",
+        nargs="*",
+        metavar="INPUT",
+        help=f"log files to read; '{STDIN_ARGUMENT}' or none reads stdin",
     )
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print extracted values of every iteration to stderr",
+        "-s", "--spec", type=Path, help="YAML or JSON specification file"
     )
-    parser.add_argument(
-        "--same-distributions-only",
-        action="store_true",
-        help="Show comparisons only for groups with the same distribution",
-    )
-    parser.add_argument(
-        "--config", type=Path, help="TOML file with a [zlog] table"
-    )
-    parser.add_argument(
-        "--format",
-        dest="output_format",
-        help="Report format: markdown, csv, json or a plugin format",
-    )
-    parser.add_argument(
-        "--match-policy",
-        choices=[policy.value for policy in MatchPolicy],
-        help="Which matching line wins when a pattern matches repeatedly",
-    )
-    parser.add_argument("--log-level", help="Logging level, e.g. INFO")
-    parser.add_argument(
-        "--checkpoint",
-        dest="checkpoint_file",
-        help="JSON file caching extracted values for resumable runs",
-    )
-    parser.add_argument(
-        "--restart",
-        action="store_true",
-        help="Ignore the existing checkpoint and start from scratch",
-    )
-    parser.add_argument(
-        "--output", type=Path, help="Write the report here, not stdout"
-    )
-    parser.add_argument(
-        "--plot-dir",
-        dest="plot_directory",
-        help=(
-            "Directory for plot images (default: the --output file's "
-            "directory, or the current directory)"
-        ),
-    )
+    add_rule_arguments(parser)
+    add_output_arguments(parser)
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     return parser
 
 
+def add_output_arguments(parser: argparse.ArgumentParser) -> None:
+    output = parser.add_argument_group("output and settings")
+    output.add_argument(
+        "-o", "--output", type=Path, help="write here instead of stdout"
+    )
+    output.add_argument(
+        "--format", dest="output_format", help="csv, json, jsonl or a plugin"
+    )
+    output.add_argument(
+        "--concat-separator", help="text between values joined with @"
+    )
+    output.add_argument("--csv-delimiter", help="one character, e.g. ';'")
+    output.add_argument(
+        "--formula-escaping",
+        choices=[escaping.value for escaping in FormulaEscaping],
+        help="prefix cells that a spreadsheet would run as formulas",
+    )
+    output.add_argument(
+        "--encoding", dest="file_encoding", help="encoding of the inputs"
+    )
+    output.add_argument("--config", type=Path, help="TOML file with [zlog]")
+    output.add_argument("--log-level", help="logging level, e.g. INFO")
+
+
 def parse_request(
     argv: Sequence[str] | None, environ: Mapping[str, str]
-) -> AnalysisRequest:
-    arguments = build_argument_parser().parse_args(argv)
+) -> ExtractionRequest:
+    arguments = build_argument_parser().parse_intermixed_args(argv)
     cli_overrides = {
         name: getattr(arguments, name)
         for name in CLI_SETTING_OPTIONS
         if getattr(arguments, name) is not None
     }
     settings = SettingsLoader().load(environ, arguments.config, cli_overrides)
-    return AnalysisRequest(
-        spec_file=arguments.spec_file,
-        input_path=Path(arguments.input_dir),
-        input_kind=select_input_kind(arguments.input_dir),
-        stdin_labels=arguments.stdin_labels,
+    return ExtractionRequest(
+        spec_file=arguments.spec,
+        cli_rules=tuple(arguments.cli_rules or ()),
+        inputs=tuple(arguments.inputs),
         output_file=arguments.output,
-        verbosity=VERBOSITY_BY_FLAG[arguments.verbose],
-        comparison_filter=COMPARISON_FILTER_BY_FLAG[
-            arguments.same_distributions_only
-        ],
-        checkpoint_mode=CHECKPOINT_MODE_BY_FLAG[arguments.restart],
         settings=settings,
     )
-
-
-def select_input_kind(input_argument: str) -> InputKind:
-    if input_argument == STDIN_INPUT_ARGUMENT:
-        return InputKind.STDIN
-    else:
-        return InputKind.DIRECTORY
 
 
 def build_plugin_registry(plugins: FeatureState) -> PluginRegistry:
@@ -170,29 +131,32 @@ def build_plugin_registry(plugins: FeatureState) -> PluginRegistry:
     return registry
 
 
-def write_report(report: str, output_file: Path | None, stdout: TextIO) -> None:
-    match output_file:
-        case None:
-            stdout.write(report)
-        case Path():
-            output_file.write_text(report, encoding=REPORT_ENCODING)
-            LOGGER.info("wrote %d characters to %s", len(report), output_file)
+def exit_code_for(error: Exception) -> int:
+    return next(
+        (
+            code
+            for error_type, code in EXIT_CODES_BY_ERROR
+            if isinstance(error, error_type)
+        ),
+        EXIT_FAILURE,
+    )
 
 
 def execute_request(
-    request: AnalysisRequest, stdin: BinaryIO, stdout: TextIO, stderr: TextIO
+    request: ExtractionRequest, streams: StandardStreams
 ) -> int:
     registry = build_plugin_registry(request.settings.plugins)
     try:
-        report = AnalysisApplication(request, registry, stdin, stderr).run()
-        write_report(report, request.output_file, stdout)
-    except ZlogError as error:
+        summary = ExtractionApplication(request, registry, streams).run()
+    except (ZlogError, OSError) as error:
         LOGGER.error("%s", error)
-        return EXIT_USAGE_ERROR
-    except OSError as error:
-        LOGGER.error("I/O failure: %s", error)
-        return EXIT_FAILURE
+        return exit_code_for(error)
     else:
+        LOGGER.info(
+            "wrote %d rows from %d lines",
+            summary.rows_written,
+            summary.lines_read,
+        )
         return EXIT_SUCCESS
 
 
@@ -210,5 +174,5 @@ def main(argv: Sequence[str] | None = None) -> int:
             force=True,
         )
         return execute_request(
-            request, sys.stdin.buffer, sys.stdout, sys.stderr
+            request, StandardStreams(sys.stdin.buffer, sys.stdout.buffer)
         )

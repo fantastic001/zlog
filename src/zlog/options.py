@@ -1,36 +1,23 @@
 from enum import Enum
 
 
-class MatchPolicy(Enum):
-    FIRST = "first"
-    LAST = "last"
-
-
-class ComparisonFilter(Enum):
-    ALL = "all"
-    SAME_DISTRIBUTION_ONLY = "same-distribution-only"
-
-
 class FeatureState(Enum):
     ENABLED = "enabled"
     DISABLED = "disabled"
 
 
-class CheckpointMode(Enum):
-    RESUME = "resume"
-    RESTART = "restart"
+class FormulaEscaping(Enum):
+    OFF = "off"
+    QUOTE = "quote"
+    TAB = "tab"
 
 
-class Verbosity(Enum):
-    QUIET = "quiet"
-    VERBOSE = "verbose"
+class ResetScope(Enum):
+    NONE = "none"
+    ALL = "all"
+    LISTED = "listed"
 
 
-class AssignmentMode(Enum):
-    REPLACE = "replace"
-    APPEND = "append"
-
-
-class InputKind(Enum):
-    DIRECTORY = "directory"
-    STDIN = "stdin"
+class BindingSection(Enum):
+    CONTEXT = "context"
+    RECORD = "record"

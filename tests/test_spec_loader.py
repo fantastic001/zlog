@@ -2,128 +2,114 @@ from pathlib import Path
 
 import pytest
 
-from zlog.domain import PatternSpec, ReportEntry
+from tests.conftest import EXAMPLES_DIRECTORY, FileWriter, create_rule_factory
 from zlog.errors import SpecError
-from zlog.spec_loader import SpecLoader, SpecParser
+from zlog.spec_loader import (
+    SpecLoader,
+    describe_decode_hints,
+    find_duplicate_keys,
+)
+from zlog.spec_parser import SpecParser
+
+SIMPLE_YAML = "matches:\n  - pattern: 'x=(\\d+)'\n    record: {x: 1}\n"
 
 
-def load_spec_text(tmp_path: Path, name: str, content: str) -> object:
-    path = tmp_path / name
-    path.write_text(content)
-    return SpecLoader(SpecParser()).load(path)
-
-
-def test_loads_yaml_spec(spec_file: Path) -> None:
-    spec = SpecLoader(SpecParser()).load(spec_file)
-
-    assert spec.groups == ("optimizer", "size")
-    assert spec.patterns[0] == PatternSpec(r"accuracy\:\s(\f)", ("accuracy",))
-    assert dict(spec.macros) == {}
-    assert spec.iteration_separator is None
-
-
-def test_loads_iteration_separator(tmp_path: Path) -> None:
-    spec = load_spec_text(
-        tmp_path, "spec.yaml", "iteration_separator: '^=+ run \\d+ =+$'\n"
+def create_loader(max_spec_bytes: int = 1024 * 1024) -> SpecLoader:
+    return SpecLoader(
+        SpecParser(create_rule_factory()), max_spec_bytes=max_spec_bytes
     )
 
-    assert spec.iteration_separator == r"^=+ run \d+ =+$"  # type: ignore[attr-defined]
+
+@pytest.mark.parametrize("name", ["spec.yaml", "spec.yml", "spec.txt"])
+def test_loads_yaml(write_file: FileWriter, name: str) -> None:
+    spec = create_loader().load(write_file(name, SIMPLE_YAML))
+
+    assert spec.record_names == ("x",)
 
 
-def test_loads_json_spec_with_macros(tmp_path: Path) -> None:
-    spec = load_spec_text(
-        tmp_path,
-        "spec.json",
-        '{"groups": ["a"], "patterns": [], "macros": {"\\\\i": "\\\\d+"}}',
+def test_loads_json(write_file: FileWriter) -> None:
+    path = write_file(
+        "spec.json", '{"matches": [{"pattern": "a", "record": {"x": 0}}]}'
     )
 
-    assert dict(spec.macros) == {r"\i": r"\d+"}  # type: ignore[attr-defined]
+    assert create_loader().load(path).record_names == ("x",)
 
 
-def test_unknown_suffix_falls_back_to_yaml(tmp_path: Path) -> None:
-    spec = load_spec_text(tmp_path, "spec.txt", "groups: [a]\n")
+def test_loads_the_bundled_example() -> None:
+    spec = create_loader().load(EXAMPLES_DIRECTORY / "train.yaml")
 
-    assert spec.groups == ("a",)  # type: ignore[attr-defined]
+    assert spec.context_names == (
+        "run",
+        "run_index",
+        "epoch",
+        "samples",
+        "warnings",
+    )
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("name", "content"),
     [
-        "- just\n- a list\n",
-        "",
-        "groups: a\n",
-        "groups: [1, 2]\n",
-        "patterns: {}\n",
-        "patterns: [{regex: '', names: [a]}]\n",
-        "patterns: [{regex: 'x'}]\n",
-        "patterns: [{regex: 'x', names: [1]}]\n",
-        "macros: [a]\n",
-        "iteration_separator: ''\n",
-        "patterns: [{regex: 'x', names: ['+']}]\n",
-        "iteration_separator: [a]\n",
-        "groups: [a\n",
+        ("spec.yaml", "matches: [{pattern: a, pattern: b}]"),
+        ("spec.yaml", "matches:\n  - pattern: a\n    record: {x: 0, x: 1}\n"),
+        ("spec.json", '{"matches": [{"pattern": "a", "pattern": "b"}]}'),
     ],
 )
-def test_invalid_specs_are_rejected(tmp_path: Path, content: str) -> None:
-    with pytest.raises(SpecError):
-        load_spec_text(tmp_path, "spec.yaml", content)
+def test_duplicate_keys_are_rejected(
+    write_file: FileWriter, name: str, content: str
+) -> None:
+    with pytest.raises(SpecError, match="duplicate"):
+        create_loader().load(write_file(name, content))
+
+
+def test_yaml_merge_keys_may_be_overridden(write_file: FileWriter) -> None:
+    content = (
+        "base: &base {pattern: a, record: {x: 0}}\n"
+        "matches:\n  - <<: *base\n    pattern: b\n"
+    )
+
+    with pytest.raises(SpecError, match="unknown keys base"):
+        create_loader().load(write_file("spec.yaml", content))
+
+
+def test_unhashable_yaml_keys_are_rejected(write_file: FileWriter) -> None:
+    with pytest.raises(SpecError, match="unhashable"):
+        create_loader().load(write_file("spec.yaml", "? [a]\n: 1\n"))
+
+
+def test_unquoted_at_sign_gets_a_hint(write_file: FileWriter) -> None:
+    path = write_file(
+        "spec.yaml", "matches:\n  - pattern: a\n    context: {@w: 1}\n"
+    )
+
+    with pytest.raises(SpecError, match="hint: quote names that start with @"):
+        create_loader().load(path)
+
+
+def test_oversized_spec_is_rejected(write_file: FileWriter) -> None:
+    with pytest.raises(SpecError, match="limit is 10"):
+        create_loader(max_spec_bytes=10).load(
+            write_file("spec.yaml", SIMPLE_YAML)
+        )
 
 
 def test_missing_spec_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="cannot read"):
-        SpecLoader(SpecParser()).load(tmp_path / "missing.yaml")
+        create_loader().load(tmp_path / "absent.yaml")
 
 
-def test_oversized_spec_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "spec.yaml"
-    path.write_text("groups: [a]\n")
-
-    with pytest.raises(SpecError, match="limit"):
-        SpecLoader(SpecParser(), max_spec_bytes=4).load(path)
+def test_find_duplicate_keys_ignores_unhashable_keys() -> None:
+    assert find_duplicate_keys(["a", ["x"], "a", ["x"], 1]) == ["a"]
 
 
-def test_spec_without_report_has_no_entries(spec_file: Path) -> None:
-    assert SpecLoader(SpecParser()).load(spec_file).reports == ()
+def test_unquoted_leading_percent_gets_a_hint(write_file: FileWriter) -> None:
+    path = write_file("spec.yaml", "matches:\n  - pattern: %d items\n")
+
+    with pytest.raises(SpecError, match="hint: quote patterns that start"):
+        create_loader().load(path)
 
 
-def test_parses_report_entries() -> None:
-    spec = SpecParser().parse(
-        {
-            "report": [
-                {"name": " Overview "},
-                {
-                    "name": "Loss",
-                    "type": " Plot ",
-                    "description": "loss curve",
-                    "y": "loss",
-                    "filter": {"size": "small"},
-                },
-            ]
-        }
-    )
-
-    assert spec.reports[0] == ReportEntry("Overview", "table")
-    assert spec.reports[1].type == "plot"
-    assert spec.reports[1].description == "loss curve"
-    assert dict(spec.reports[1].options) == {
-        "y": "loss",
-        "filter": {"size": "small"},
-    }
-
-
-@pytest.mark.parametrize(
-    ("raw_report", "message"),
-    [
-        ({"name": "a"}, "must be a list"),
-        (["a"], "needs a non-empty 'name'"),
-        ([{"name": " "}], "needs a non-empty 'name'"),
-        ([{"name": "a", "type": ""}], "'type' must be"),
-        ([{"name": "a", "description": 3}], "'type' must be"),
-        ([{"name": "a"}, {"name": "a"}], "duplicate 'report' names: a"),
-    ],
-)
-def test_rejects_invalid_report_entries(
-    raw_report: object, message: str
-) -> None:
-    with pytest.raises(SpecError, match=message):
-        SpecParser().parse({"report": raw_report})
+def test_describe_decode_hints() -> None:
+    assert describe_decode_hints("no hint here") == ""
+    assert "backtick" in describe_decode_hints("found character '`'")
+    assert "'%d items'" in describe_decode_hints("found character '%'")

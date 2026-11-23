@@ -16,3 +16,7 @@ class InputError(ZlogError):
 
 class ExtractionError(ZlogError):
     pass
+
+
+class InvalidValueError(ZlogError):
+    pass

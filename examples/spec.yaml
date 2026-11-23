@@ -1,6 +1,0 @@
-groups: [optimizer, size]
-patterns:
-  - regex: 'accuracy\:\s(\f)'
-    names: [accuracy]
-  - regex: 'loss=(\f) time=(\f)'
-    names: [loss, time]

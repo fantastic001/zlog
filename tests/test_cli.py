@@ -1,368 +1,158 @@
 import io
-import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import RunTreeBuilder
+from tests.conftest import EXAMPLES_DIRECTORY, FileWriter
+from zlog.application import StandardStreams
 from zlog.cli import (
     EXIT_FAILURE,
     EXIT_SUCCESS,
     EXIT_USAGE_ERROR,
     build_plugin_registry,
+    execute_request,
+    exit_code_for,
     main,
+    parse_request,
+)
+from zlog.errors import (
+    ConfigurationError,
+    ExtractionError,
+    InputError,
+    SpecError,
 )
 from zlog.options import FeatureState
 
-RUN_TREE = {
-    "adam-small": {
-        index: f"accuracy: {value}\nloss={value * 10}\n"
-        for index, value in enumerate([0.1, 0.2, 0.3])
-    },
-    "sgd-small": {
-        index: f"accuracy: {value}\n"
-        for index, value in enumerate([0.7, 0.8, 0.9])
-    },
-    "rms-small": {0: "accuracy: 0.5\n"},
-}
+PLUGINS_OFF = {"ZLOG_PLUGINS": "off"}
 
 
-@pytest.fixture
-def input_dir(build_run_tree: RunTreeBuilder) -> Path:
-    return build_run_tree(RUN_TREE)
+def run_cli(argv: list[str], stdin: bytes = b"") -> tuple[int, str]:
+    request = parse_request(argv, PLUGINS_OFF)
+    stdout = io.BytesIO()
+    code = execute_request(request, StandardStreams(io.BytesIO(stdin), stdout))
+    return code, stdout.getvalue().decode("utf-8")
 
 
-@pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ZLOG_PLUGINS", "off")
-
-
-def test_markdown_report(
-    spec_file: Path, input_dir: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    exit_code = main([str(spec_file), str(input_dir), "--verbose"])
-
-    captured = capsys.readouterr()
-    assert exit_code == EXIT_SUCCESS
-    assert "# Summary for all groups" in captured.out
-    assert "0.200000 +- 0.081650 (N=3)" in captured.out
-    assert "# Comparing groups for pattern: accuracy" in captured.out
-    assert "(adam, small) vs (sgd, small)" in captured.out
-    assert "# Comparing groups for pattern: loss" in captured.out
-    assert "Iteration: 0" in captured.err
-
-
-def test_json_report_with_filter_and_output_file(
-    spec_file: Path, input_dir: Path, tmp_path: Path
-) -> None:
-    output_file = tmp_path / "report.json"
-
-    exit_code = main(
+def test_example_through_the_command_line() -> None:
+    code, output = run_cli(
         [
-            str(spec_file),
-            str(input_dir),
+            "-s",
+            str(EXAMPLES_DIRECTORY / "train.yaml"),
+            str(EXAMPLES_DIRECTORY / "train.log"),
+            "--concat-separator",
+            "|",
             "--format",
-            "json",
-            "--same-distributions-only",
-            "--output",
-            str(output_file),
+            "jsonl",
         ]
     )
 
-    document = json.loads(output_file.read_text())
-    assert exit_code == EXIT_SUCCESS
-    assert document[0]["rows"][0]["accuracy"]["n"] == 3
-    accuracy_rows = document[1]["rows"]
-    assert all(row["same_distribution"] is True for row in accuracy_rows)
-    assert len(accuracy_rows) == 1
+    assert code == EXIT_SUCCESS
+    assert len(output.splitlines()) == 9
+    assert '"warnings": "lr-high|nan-loss"' in output
 
 
-def test_checkpoint_is_written_and_restart_accepted(
-    spec_file: Path, input_dir: Path, tmp_path: Path
-) -> None:
-    checkpoint_file = tmp_path / "state.json"
-    arguments = [str(spec_file), str(input_dir), "--format", "csv"]
-
-    first = main([*arguments, "--checkpoint", str(checkpoint_file)])
-    second = main(
-        [*arguments, "--checkpoint", str(checkpoint_file), "--restart"]
+def test_cli_settings_override_environment() -> None:
+    request = parse_request(
+        ["-p", "x", "--csv-delimiter", ";", "--encoding", "latin-1"]
+        + ["--formula-escaping", "tab", "--log-level", "info"],
+        {"ZLOG_CSV_DELIMITER": "\t"},
     )
 
-    assert (first, second) == (EXIT_SUCCESS, EXIT_SUCCESS)
-    assert len(json.loads(checkpoint_file.read_text())["entries"]) == 7
-
-
-def test_no_groups_reports_no_results(
-    tmp_path: Path, input_dir: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    spec_file = tmp_path / "empty.yaml"
-    spec_file.write_text("patterns: []\n")
-
-    exit_code = main([str(spec_file), str(input_dir)])
-
-    assert exit_code == EXIT_SUCCESS
-    assert capsys.readouterr().out == "# No results to summarize.\n"
+    assert request.settings.csv_delimiter == ";"
+    assert request.settings.file_encoding == "latin-1"
+    assert request.settings.formula_escaping.value == "tab"
+    assert request.settings.log_level == "INFO"
+    assert len(request.cli_rules) == 1
+    assert request.spec_file is None
 
 
 @pytest.mark.parametrize(
-    "extra_arguments", [["--format", "xml"], ["--log-level", "chatty"]]
+    ("argv", "stdin", "expected_code"),
+    [
+        (["-p", "a(b)", "-r", "v=3"], b"", EXIT_USAGE_ERROR),
+        (["-p", "a"], b"", EXIT_SUCCESS),
+        (["-p", "n=(\\w+)", "-c", "+n"], b"n=1\nn=x\n", EXIT_FAILURE),
+        (["-p", "a", "-r", "v=0", "absent.log"], b"", EXIT_FAILURE),
+        (["-p", "a", "--format", "xml"], b"", EXIT_USAGE_ERROR),
+    ],
 )
-def test_usage_errors(
-    spec_file: Path, input_dir: Path, extra_arguments: list[str]
+def test_exit_codes(
+    argv: list[str], stdin: bytes, expected_code: int, tmp_path: Path
 ) -> None:
-    exit_code = main([str(spec_file), str(input_dir), *extra_arguments])
-
-    assert exit_code == EXIT_USAGE_ERROR
-
-
-def test_missing_spec_is_usage_error(tmp_path: Path, input_dir: Path) -> None:
-    exit_code = main([str(tmp_path / "missing.yaml"), str(input_dir)])
-
-    assert exit_code == EXIT_USAGE_ERROR
-
-
-def test_unwritable_output_is_failure(
-    spec_file: Path, input_dir: Path, tmp_path: Path
-) -> None:
-    output_file = tmp_path / "missing-directory" / "report.md"
-
-    exit_code = main(
-        [str(spec_file), str(input_dir), "--output", str(output_file)]
+    code, _ = run_cli(
+        [str(tmp_path / arg) if arg.endswith(".log") else arg for arg in argv],
+        stdin,
     )
 
-    assert exit_code == EXIT_FAILURE
+    assert code == expected_code
 
 
-def test_plugin_registry_respects_feature_flag() -> None:
-    enabled = build_plugin_registry(FeatureState.ENABLED)
-    disabled = build_plugin_registry(FeatureState.DISABLED)
+def test_errors_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    code, output = run_cli(["-p", "n=(\\w+)", "-c", "+n"], b"n=1\nn=x\n")
 
-    assert enabled.hooks == disabled.hooks == ()
+    assert code == EXIT_FAILURE
+    assert output == "path,n\n-,1\n"
+    assert "-:2: context variable 'n'" in caplog.text
 
 
-def test_iteration_separator_splits_files_into_grouped_iterations(
-    tmp_path: Path,
-    build_run_tree: RunTreeBuilder,
-    capsys: pytest.CaptureFixture[str],
+def test_usage_errors_exit_with_two() -> None:
+    with pytest.raises(SystemExit) as raised:
+        parse_request(["-c", "x"], {})
+
+    assert raised.value.code == EXIT_USAGE_ERROR
+
+
+def test_main_reports_configuration_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    spec_file = tmp_path / "separated.yaml"
-    spec_file.write_text(
-        "groups: [optimizer, size]\n"
-        "iteration_separator: '^=+ run =+$'\n"
-        "patterns:\n"
-        "  - regex: 'size=(\\w+)'\n"
-        "    names: [size]\n"
-        "  - regex: 'accuracy\\:\\s(\\f)'\n"
-        "    names: [accuracy]\n"
-    )
-    segments = [
-        f"size={size}\naccuracy: {value}\n"
-        for size, value in [("small", 1), ("large", 9), ("small", 3)]
-    ]
-    input_dir = build_run_tree({"adam": {0: "=== run ===\n".join(segments)}})
+    monkeypatch.setenv("ZLOG_DECIMAL_PRECISION", "0")
 
-    exit_code = main([str(spec_file), str(input_dir), "--format", "json"])
-
-    rows = json.loads(capsys.readouterr().out)[0]["rows"]
-    assert exit_code == EXIT_SUCCESS
-    assert [row["accuracy"]["n"] for row in rows] == [1, 2]
-    assert [row["accuracy"]["mean"] for row in rows] == [9.0, 2.0]
+    assert main(["-p", "x"]) == EXIT_USAGE_ERROR
+    assert "decimal_precision must lie between" in capsys.readouterr().err
 
 
-def test_appended_values_are_reported_as_list_statistics(
-    tmp_path: Path,
-    build_run_tree: RunTreeBuilder,
-    capsys: pytest.CaptureFixture[str],
+def test_main_writes_an_output_file(
+    monkeypatch: pytest.MonkeyPatch, write_file: FileWriter, tmp_path: Path
 ) -> None:
-    spec_file = tmp_path / "lists.yaml"
-    spec_file.write_text(
-        "groups: [optimizer]\n"
-        "patterns:\n"
-        "  - regex: 'loss=(\\f)'\n"
-        "    names: ['+loss']\n"
-    )
-    input_dir = build_run_tree(
-        {"adam": {0: "loss=1\nloss=3\n", 1: "loss=5\nloss=7\nloss=9\n"}}
-    )
+    monkeypatch.setenv("ZLOG_PLUGINS", "off")
+    log = write_file("a.log", "v=1\n")
+    target = tmp_path / "out.csv"
 
-    exit_code = main([str(spec_file), str(input_dir), "--format", "json"])
+    code = main(["-p", "v=(\\d)", "-r", "v", str(log), "-o", str(target)])
 
-    sections = json.loads(capsys.readouterr().out)
-    row = sections[0]["rows"][0]
-    assert exit_code == EXIT_SUCCESS
-    assert row["loss.mean"]["mean"] == 4.5
-    assert row["loss.count"]["mean"] == 2.5
-    assert row["loss.min"]["mean"] == 3.0
-    assert row["loss.max"]["mean"] == 6.0
-    assert "loss.stddev" in row
-    assert [section["title"] for section in sections[1:]] == [
-        f"Comparing groups for pattern: loss.{name}"
-        for name in ("mean", "count", "stddev", "min", "max")
-    ]
+    assert code == EXIT_SUCCESS
+    assert target.read_text(encoding="utf-8") == f"path,v\n{log},1\n"
 
 
-STDIN_SPEC = (
-    "groups: [optimizer, size]\n"
-    "iteration_separator: '^---$'\n"
-    "patterns:\n"
-    "  - regex: 'size=(\\w+)'\n"
-    "    names: [size]\n"
-    "  - regex: 'accuracy\\:\\s(\\f)'\n"
-    "    names: [accuracy]\n"
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ConfigurationError("x"), EXIT_USAGE_ERROR),
+        (SpecError("x"), EXIT_USAGE_ERROR),
+        (InputError("x"), EXIT_FAILURE),
+        (ExtractionError("x"), EXIT_FAILURE),
+        (OSError("x"), EXIT_FAILURE),
+        (ValueError("x"), EXIT_FAILURE),
+    ],
 )
-STDIN_LOG = (
-    "size=small\naccuracy: 1\n---\n"
-    "size=small\naccuracy: 3\n---\n"
-    "size=large\naccuracy: 8\n"
-)
+def test_exit_code_for(error: Exception, expected: int) -> None:
+    assert exit_code_for(error) == expected
 
 
-@pytest.fixture
-def stdin_spec_file(tmp_path: Path) -> Path:
-    path = tmp_path / "stdin.yaml"
-    path.write_text(STDIN_SPEC)
-    return path
+@pytest.mark.parametrize("state", [FeatureState.ENABLED, FeatureState.DISABLED])
+def test_build_plugin_registry(state: FeatureState) -> None:
+    assert build_plugin_registry(state).hooks == ()
 
 
-def feed_stdin(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
-    stream = io.TextIOWrapper(io.BytesIO(content.encode("utf-8")))
-    monkeypatch.setattr("sys.stdin", stream)
-
-
-def test_reads_log_from_stdin(
-    stdin_spec_file: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    feed_stdin(monkeypatch, STDIN_LOG)
-
-    exit_code = main(
-        [
-            str(stdin_spec_file),
-            "-",
-            "--stdin-labels",
-            "adam",
-            "--format",
-            "json",
-            "--checkpoint",
-            str(tmp_path / "ignored.json"),
-        ]
+def test_module_entry_point_prints_version() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "zlog", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
-    captured = capsys.readouterr()
-    rows = json.loads(captured.out)[0]["rows"]
-    assert exit_code == EXIT_SUCCESS
-    assert [(row["optimizer"], row["size"]) for row in rows] == [
-        ("adam", "large"),
-        ("adam", "small"),
-    ]
-    assert rows[1]["accuracy"]["mean"] == 2.0
-    assert "checkpointing is disabled for stdin input" in captured.err
-    assert not (tmp_path / "ignored.json").exists()
-
-
-def test_stdin_without_required_labels_is_usage_error(
-    stdin_spec_file: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    feed_stdin(monkeypatch, STDIN_LOG)
-
-    assert main([str(stdin_spec_file), "-"]) == EXIT_USAGE_ERROR
-
-
-REPORT_SPEC = """\
-groups: [optimizer, size]
-patterns:
-  - regex: 'accuracy\\:\\s(\\f)'
-    names: [accuracy]
-  - regex: 'loss=(\\f)'
-    names: [+loss]
-report:
-  - name: Adam only
-    filter: {optimizer: adam}
-  - name: Adam vs others
-    type: statistics
-    first: {optimizer: adam}
-    second: [{optimizer: sgd}, {optimizer: rms}]
-    pooled: true
-  - name: Accuracy
-    type: plot
-    description: Mean accuracy per partition.
-    y: accuracy
-"""
-
-
-def write_report_spec(tmp_path: Path, content: str) -> Path:
-    path = tmp_path / "report_spec.yaml"
-    path.write_text(content)
-    return path
-
-
-def test_configured_report_writes_plots_next_to_output(
-    tmp_path: Path, input_dir: Path
-) -> None:
-    output_file = tmp_path / "out" / "report.md"
-    output_file.parent.mkdir()
-
-    exit_code = main(
-        [
-            str(write_report_spec(tmp_path, REPORT_SPEC)),
-            str(input_dir),
-            "--output",
-            str(output_file),
-        ]
-    )
-
-    report = output_file.read_text()
-    assert exit_code == EXIT_SUCCESS
-    assert report.startswith("# Adam only\n")
-    assert "# Summary for all groups" not in report
-    assert "| loss.mean " in report
-    assert "# Adam vs others" in report
-    assert "Mean accuracy per partition.\n\n![Accuracy](<Accuracy.png>)" in (
-        report
-    )
-    assert (output_file.parent / "Accuracy.png").stat().st_size > 0
-
-
-def test_configured_json_report_uses_plot_directory(
-    tmp_path: Path,
-    input_dir: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    exit_code = main(
-        [
-            str(write_report_spec(tmp_path, REPORT_SPEC)),
-            str(input_dir),
-            "--format",
-            "json",
-            "--plot-dir",
-            "figures",
-        ]
-    )
-
-    document = json.loads(capsys.readouterr().out)
-    assert exit_code == EXIT_SUCCESS
-    assert [section["title"] for section in document] == [
-        "Adam only",
-        "Adam vs others",
-        "Accuracy",
-    ]
-    assert document[1]["rows"][0]["first"]["n"] == 3
-    assert document[2]["attachments"] == ["figures/Accuracy.png"]
-    assert (tmp_path / "figures" / "Accuracy.png").exists()
-
-
-def test_invalid_report_entry_is_a_usage_error(
-    tmp_path: Path, input_dir: Path
-) -> None:
-    spec = write_report_spec(
-        tmp_path,
-        "groups: [optimizer]\npatterns: []\n"
-        "report:\n  - {name: x, type: plot}\n",
-    )
-
-    assert main([str(spec), str(input_dir)]) == EXIT_USAGE_ERROR
+    assert completed.returncode == EXIT_SUCCESS
+    assert completed.stdout.startswith("zlog ")

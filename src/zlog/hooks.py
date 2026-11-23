@@ -1,25 +1,42 @@
 import logging
-from collections.abc import Callable, Iterable
-from typing import Any, Protocol, TextIO, runtime_checkable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
-from zlog.domain import AnalysisSpec, IterationRecord, Summary
+from zlog.rules import ExtractionSpec
 
 LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ExtractedRow:
+    path: str
+    line_number: int
+    rule_index: int
+    values: Mapping[str, str | None]
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    inputs_read: int
+    lines_read: int
+    rows_written: int
+    matches_per_rule: tuple[int, ...]
+
+
 @runtime_checkable
 class LoadListener(Protocol):
-    def on_load(self, spec: AnalysisSpec) -> None: ...
+    def on_load(self, spec: ExtractionSpec) -> None: ...
 
 
 @runtime_checkable
-class IterationListener(Protocol):
-    def on_iteration_analyzed(self, record: IterationRecord) -> None: ...
+class RowListener(Protocol):
+    def on_row(self, row: ExtractedRow) -> None: ...
 
 
 @runtime_checkable
 class TerminationListener(Protocol):
-    def on_terminate(self, summary: Summary) -> None: ...
+    def on_terminate(self, summary: RunSummary) -> None: ...
 
 
 class HookDispatcher:
@@ -28,22 +45,26 @@ class HookDispatcher:
         self._load_listeners = tuple(
             hook for hook in registered if isinstance(hook, LoadListener)
         )
-        self._iteration_listeners = tuple(
-            hook for hook in registered if isinstance(hook, IterationListener)
+        self._row_listeners = tuple(
+            hook for hook in registered if isinstance(hook, RowListener)
         )
         self._termination_listeners = tuple(
             hook for hook in registered if isinstance(hook, TerminationListener)
         )
 
-    def on_load(self, spec: AnalysisSpec) -> None:
+    @property
+    def has_row_listeners(self) -> bool:
+        return bool(self._row_listeners)
+
+    def on_load(self, spec: ExtractionSpec) -> None:
         for listener in self._load_listeners:
             self._invoke_hook_safely(listener.on_load, spec)
 
-    def on_iteration_analyzed(self, record: IterationRecord) -> None:
-        for listener in self._iteration_listeners:
-            self._invoke_hook_safely(listener.on_iteration_analyzed, record)
+    def on_row(self, row: ExtractedRow) -> None:
+        for listener in self._row_listeners:
+            self._invoke_hook_safely(listener.on_row, row)
 
-    def on_terminate(self, summary: Summary) -> None:
+    def on_terminate(self, summary: RunSummary) -> None:
         for listener in self._termination_listeners:
             self._invoke_hook_safely(listener.on_terminate, summary)
 
@@ -55,29 +76,3 @@ class HookDispatcher:
             callback(argument)
         except Exception:
             LOGGER.exception("hook %r failed", callback)
-
-
-class VerboseIterationPrinter:
-    def __init__(self, stream: TextIO) -> None:
-        self._stream = stream
-
-    def on_iteration_analyzed(self, record: IterationRecord) -> None:
-        print(
-            f"Group: {dict(record.group)}, "
-            f"Iteration: {record.iteration}, "
-            f"Segment: {record.segment}, "
-            f"Results: {dict(record.values)}",
-            file=self._stream,
-        )
-
-
-class IterationRecordCollector:
-    def __init__(self) -> None:
-        self._records: list[IterationRecord] = []
-
-    def on_iteration_analyzed(self, record: IterationRecord) -> None:
-        self._records.append(record)
-
-    @property
-    def records(self) -> tuple[IterationRecord, ...]:
-        return tuple(self._records)
